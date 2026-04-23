@@ -21,14 +21,15 @@ from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QUrl, QStandardPaths
+from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox,
     QFileDialog, QGroupBox, QHBoxLayout, QLabel, QMainWindow,
     QPushButton, QStatusBar, QVBoxLayout, QWidget,
 )
 
-from logger import QualDataLogger
+from logger import QualDataLogger, prepare_csv_log
 from providers import (
     QualFileProvider, QualSerialProvider, QualSimulationProvider,
     list_serial_ports,
@@ -146,6 +147,12 @@ class _RollingBuffer:
 # ---------------------------------------------------------------------------
 
 class QualMainWindow(QMainWindow):
+    @staticmethod
+    def _default_log_path():
+        desktop_dir = QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)
+        base_dir = Path(desktop_dir) if desktop_dir else Path.home()
+        return str((base_dir / "qual_log.csv").resolve())
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("QUAL Waveform Viewer  —  Sagemcom AMR")
@@ -168,7 +175,7 @@ class QualMainWindow(QMainWindow):
         self._fs_hz           = 0.0
 
         self._play_path = ""
-        self._log_path  = str(Path(__file__).resolve().parent / "qual_log.csv")
+        self._log_path  = self._default_log_path()
         self._latest_t = np.empty(0, dtype=np.float64)
         self._latest_u = [
             np.empty(0, dtype=np.float32),
@@ -182,6 +189,38 @@ class QualMainWindow(QMainWindow):
         self._timer = QTimer(self)
         self._timer.setInterval(REFRESH_MS)
         self._timer.timeout.connect(self._on_tick)
+
+    @staticmethod
+    def _normalize_log_path(path: str):
+        normalized = Path(path).expanduser()
+        if normalized.exists() and normalized.is_dir():
+            normalized = normalized / "qual_log.csv"
+        if normalized.suffix.lower() != ".csv":
+            normalized = normalized.with_suffix(".csv")
+        return str(normalized.resolve())
+
+    def _refresh_log_path_ui(self):
+        self._btn_log_file.setToolTip(self._log_path)
+        self._btn_open_log_folder.setToolTip(str(Path(self._log_path).resolve().parent))
+        self._lbl_log_file.setText(f"CSV: {self._log_path}")
+
+    def _set_log_button_idle(self):
+        self._btn_log_file.setText(Path(self._log_path).name)
+        self._refresh_log_path_ui()
+        self._btn_log_file.setStyleSheet("")
+
+    def _set_log_button_armed(self):
+        self._btn_log_file.setText(f"Armed: {Path(self._log_path).name}")
+        self._refresh_log_path_ui()
+        self._btn_log_file.setStyleSheet("color:#FFD866; font-weight:bold")
+
+    def _open_log_folder(self):
+        log_dir = Path(self._log_path).resolve().parent
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(log_dir)))
+
+    def _prime_log_file(self):
+        prepare_csv_log(self._log_path)
+        self._set_log_button_armed()
 
     # ------------------------------------------------------------------ UI
 
@@ -218,7 +257,7 @@ class QualMainWindow(QMainWindow):
         conn_row.addWidget(self._lbl_baud)
         self._cb_baud = QComboBox()
         for b in ("9600", "19200", "38400", "57600", "115200",
-                  "230400", "460800", "921600", "960000", "2000000"):
+                  "230400", "460800", "921600", "960000", "2000000", "3000000"):
             self._cb_baud.addItem(b)
         self._cb_baud.setCurrentText("960000")
         conn_row.addWidget(self._cb_baud)
@@ -313,6 +352,11 @@ class QualMainWindow(QMainWindow):
         self._btn_log_file.clicked.connect(self._pick_log_file)
         opt_row.addWidget(self._btn_log_file)
 
+        self._btn_open_log_folder = QPushButton("Open")
+        self._btn_open_log_folder.setToolTip(str(Path(self._log_path).resolve().parent))
+        self._btn_open_log_folder.clicked.connect(self._open_log_folder)
+        opt_row.addWidget(self._btn_open_log_folder)
+
         # Channel toggles (U only — I not used)
         self._chk_u = []
         for label in ("U1", "U2", "U3"):
@@ -338,16 +382,22 @@ class QualMainWindow(QMainWindow):
         self._lbl_rms_v  = QLabel("V_rms: —")
         self._lbl_fs     = QLabel("fs: —")
         self._lbl_fps    = QLabel("fps: —")
+        self._lbl_log_file = QLabel("")
+        self._lbl_log_file.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._lbl_log_file.setStyleSheet("color:#AAB2D5; padding:0 8px; font-family:monospace;")
 
         for w in (self._lbl_status, self._lbl_diag,
                   self._lbl_rms_v, self._lbl_fs, self._lbl_fps):
             self._sb.addWidget(w)
             self._sb.addWidget(_sep())
 
+        self._sb.addPermanentWidget(self._lbl_log_file, 1)
         self._lbl_cursor = QLabel("Cursor: —")
         self._lbl_cursor.setStyleSheet(
             "color:#FFD700; padding:0 8px; font-family:monospace;")
         self._sb.addPermanentWidget(self._lbl_cursor)
+
+        self._refresh_log_path_ui()
 
         self._refresh_ports()
         self._on_mode_changed(0)
@@ -425,16 +475,23 @@ class QualMainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(
             self, "Save CSV log", self._log_path, "CSV files (*.csv)")
         if path:
-            self._log_path = path
-            self._btn_log_file.setText(Path(path).name)
-            self._btn_log_file.setToolTip(path)
+            self._log_path = self._normalize_log_path(path)
             if self._provider is not None and self._logger is not None:
                 self._stop_logger()
                 self._start_logger()
+                self._lbl_status.setText(f"Running  |  Logging to: {self._log_path}")
+            elif self._chk_log.isChecked():
+                self._prime_log_file()
+                self._lbl_status.setText(
+                    f"CSV armed  |  {self._log_path}  |  Press Start to record")
+            else:
+                self._set_log_button_idle()
+                self._lbl_status.setText(f"CSV path set  |  {self._log_path}")
 
     def _start_logger(self):
         if self._logger is not None:
             return
+        self._log_q = queue.Queue()
         self._logger = QualDataLogger(self._log_path, self._log_q)
         self._logger.start()
         if self._provider is not None:
@@ -455,14 +512,32 @@ class QualMainWindow(QMainWindow):
             else:
                 stop_message = (
                     f"Stopped  |  Logged {self._logger.rows_written} rows → {self._log_path}")
-                self._btn_log_file.setStyleSheet("")
-                self._btn_log_file.setText(Path(self._log_path).name)
-                self._btn_log_file.setToolTip(self._log_path)
+                if self._chk_log.isChecked():
+                    self._set_log_button_armed()
+                else:
+                    self._set_log_button_idle()
             self._logger = None
+            self._log_q = queue.Queue()
         return stop_message
 
     def _on_log_toggle(self, checked):
+        checked = bool(checked)
+        if checked:
+            try:
+                self._prime_log_file()
+            except Exception as exc:
+                self._lbl_status.setText(f"LOG ERROR: {exc}")
+                self._btn_log_file.setStyleSheet("color:#FF4040; font-weight:bold")
+                self._btn_log_file.setText(Path(self._log_path).name)
+                self._btn_log_file.setToolTip(self._log_path)
+                return
         if self._provider is None:
+            if checked:
+                self._lbl_status.setText(
+                    f"CSV armed  |  {self._log_path}  |  Press Start to record")
+            else:
+                self._set_log_button_idle()
+                self._lbl_status.setText("Stopped")
             return
         if checked:
             self._start_logger()

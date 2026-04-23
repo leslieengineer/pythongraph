@@ -17,6 +17,19 @@ from pathlib import Path
 from typing import Optional
 
 _SENTINEL = object()   # poison pill to stop the writer thread
+_CSV_HEADER = ["t_s", "U1_mV", "U2_mV", "U3_mV"]
+
+
+def prepare_csv_log(path: str):
+    """Ensure the CSV path exists and contains the header row."""
+    csv_path = Path(path)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    if csv_path.exists() and csv_path.stat().st_size > 0:
+        return
+    with csv_path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(_CSV_HEADER)
+        fh.flush()
 
 
 class QualDataLogger:
@@ -60,7 +73,7 @@ class QualDataLogger:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with self._path.open("w", newline="", encoding="utf-8") as fh:
                 writer = csv.writer(fh)
-                writer.writerow(["t_s", "U1_mV", "U2_mV", "U3_mV"])
+                writer.writerow(_CSV_HEADER)
                 pending_since_flush = 0
                 while True:
                     try:
