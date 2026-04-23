@@ -36,6 +36,13 @@ _LINE_RE = re.compile(
     r'^\$Q,(\d+),(\d+),([+-]?\d+(?:\.\d+)?),([+-]?\d+(?:\.\d+)?),([+-]?\d+(?:\.\d+)?)'
 )
 
+_BINARY_SYNC = 0xA5
+_BINARY_SYNC_BYTES = bytes([_BINARY_SYNC])
+_BINARY_PACKET_SIZE = 9
+_BINARY_SCALE_MV = 10.0
+_BINARY_SAMPLES_PER_CYCLE = 156
+_BINARY_FS_HZ = _BINARY_SAMPLES_PER_CYCLE * 50
+
 
 def _parse_line(line: str) -> Optional[dict]:
     """Parse a $Q CSV line.  Returns frame dict or None."""
@@ -48,6 +55,42 @@ def _parse_line(line: str) -> Optional[dict]:
     u2   = float(m.group(4))
     u3   = float(m.group(5))
     t_s  = sec + ms / 1000.0
+    return {"t_s": t_s, "u": [u1, u2, u3]}
+
+
+def _binary_checksum(payload: bytes) -> int:
+    checksum = 0
+    for value in payload:
+        checksum ^= value
+    return checksum
+
+
+def _parse_binary_packet(packet: bytes, state: dict) -> Optional[dict]:
+    if len(packet) != _BINARY_PACKET_SIZE or packet[0] != _BINARY_SYNC:
+        return None
+    if _binary_checksum(packet[1:8]) != packet[8]:
+        return None
+
+    sample_pos = packet[1]
+    if sample_pos >= _BINARY_SAMPLES_PER_CYCLE:
+        return None
+
+    u1 = int.from_bytes(packet[2:4], byteorder="little", signed=True) * _BINARY_SCALE_MV
+    u2 = int.from_bytes(packet[4:6], byteorder="little", signed=True) * _BINARY_SCALE_MV
+    u3 = int.from_bytes(packet[6:8], byteorder="little", signed=True) * _BINARY_SCALE_MV
+
+    last_sample_pos = state.get("last_sample_pos")
+    if last_sample_pos is None:
+        state["last_sample_pos"] = sample_pos
+        state["total_samples"] = 0
+    else:
+        delta = (sample_pos - last_sample_pos) % _BINARY_SAMPLES_PER_CYCLE
+        if delta == 0:
+            return None
+        state["total_samples"] += delta
+        state["last_sample_pos"] = sample_pos
+
+    t_s = state["total_samples"] / _BINARY_FS_HZ
     return {"t_s": t_s, "u": [u1, u2, u3]}
 
 
@@ -123,23 +166,73 @@ class QualSerialProvider(_BaseProvider):
             self.error = str(exc)
             return
         buf = b""
+        binary_state = {"last_sample_pos": None, "total_samples": 0}
+        mode: Optional[str] = None
         try:
             while not self._stop.is_set():
                 chunk = ser.read(ser.in_waiting or 1)
                 if not chunk:
                     continue
                 buf += chunk
-                while b"\n" in buf:
-                    line, buf = buf.split(b"\n", 1)
-                    try:
-                        text = line.decode("ascii", errors="ignore")
-                    except Exception:
+                while True:
+                    if mode is None:
+                        buf = buf.lstrip(b"\r\n\t ")
+                        if not buf:
+                            break
+                        if buf.startswith(b"$Q,"):
+                            mode = "ascii"
+                            continue
+                        if buf.startswith(_BINARY_SYNC_BYTES):
+                            mode = "binary"
+                            continue
+                        ascii_idx = buf.find(b"$Q,")
+                        binary_idx = buf.find(_BINARY_SYNC_BYTES)
+                        candidates = [idx for idx in (ascii_idx, binary_idx) if idx != -1]
+                        if not candidates:
+                            buf = b""
+                            break
+                        buf = buf[min(candidates):]
                         continue
+
+                    if mode == "ascii":
+                        if b"\n" not in buf:
+                            break
+                        line, buf = buf.split(b"\n", 1)
+                        try:
+                            text = line.decode("ascii", errors="ignore")
+                        except Exception:
+                            continue
+                        self.lines_rx += 1
+                        frame = _parse_line(text)
+                        if frame:
+                            self.frames_rx += 1
+                            self._push(frame)
+                            continue
+                        mode = None
+                        continue
+
+                    if len(buf) < _BINARY_PACKET_SIZE:
+                        break
+                    if buf[0] != _BINARY_SYNC:
+                        sync_idx = buf.find(_BINARY_SYNC_BYTES)
+                        if sync_idx == -1:
+                            buf = b""
+                            mode = None
+                            break
+                        buf = buf[sync_idx:]
+                        if len(buf) < _BINARY_PACKET_SIZE:
+                            break
+
+                    packet = buf[:_BINARY_PACKET_SIZE]
+                    frame = _parse_binary_packet(packet, binary_state)
+                    if frame is None:
+                        buf = buf[1:]
+                        continue
+
+                    buf = buf[_BINARY_PACKET_SIZE:]
                     self.lines_rx += 1
-                    frame = _parse_line(text)
-                    if frame:
-                        self.frames_rx += 1
-                        self._push(frame)
+                    self.frames_rx += 1
+                    self._push(frame)
         except Exception as exc:
             self.error = str(exc)
         finally:
