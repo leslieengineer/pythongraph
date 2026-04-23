@@ -748,8 +748,12 @@ class QualMainWindow(QMainWindow):
             self._tick_ts = now
 
         if self._provider is not None and hasattr(self._provider, "lines_rx"):
-            self._lbl_diag.setText(
-                f"lines: {self._provider.lines_rx} | frames: {self._provider.frames_rx}")
+            if isinstance(self._provider, QualFileProvider):
+                self._lbl_diag.setText(
+                    f"playback: {Path(self._play_path).name} | loaded: {self._provider.loaded_frames} | replayed: {self._provider.frames_rx}")
+            else:
+                self._lbl_diag.setText(
+                    f"lines: {self._provider.lines_rx} | frames: {self._provider.frames_rx}")
         else:
             self._lbl_diag.setText(f"buf: {self._buf.sample_count}")
 

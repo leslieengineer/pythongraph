@@ -61,6 +61,28 @@ def _parse_line(line: str) -> Optional[dict]:
     return {"t_s": t_s, "u": [u1, u2, u3]}
 
 
+def _parse_saved_csv_line(line: str) -> Optional[dict]:
+    """Parse a saved waveform CSV row: t_s,U1_mV,U2_mV,U3_mV."""
+    parts = [part.strip() for part in line.strip().split(",")]
+    if len(parts) < 4:
+        return None
+    if parts[0] == "t_s":
+        return None
+    try:
+        t_s = float(parts[0])
+        u1 = float(parts[1])
+        u2 = float(parts[2])
+        u3 = float(parts[3])
+    except ValueError:
+        return None
+    return {"t_s": t_s, "u": [u1, u2, u3]}
+
+
+def _parse_playback_line(line: str) -> Optional[dict]:
+    """Parse either legacy $Q lines or the app's saved CSV rows."""
+    return _parse_line(line) or _parse_saved_csv_line(line)
+
+
 def _binary_checksum(payload: bytes) -> int:
     checksum = 0
     for value in payload:
@@ -119,6 +141,7 @@ class _BaseProvider:
         self._thread: Optional[threading.Thread] = None
         self.lines_rx  = 0
         self.frames_rx = 0
+        self.loaded_frames = 0
         self.frames_dropped = 0
         self.error: Optional[str] = None
 
@@ -325,12 +348,14 @@ class QualFileProvider(_BaseProvider):
         frames: list[dict] = []
         for raw in lines:
             self.lines_rx += 1
-            f = _parse_line(raw)
+            f = _parse_playback_line(raw)
             if f:
                 frames.append(f)
 
+        self.loaded_frames = len(frames)
+
         if not frames:
-            self.error = "No valid $Q frames found in file"
+            self.error = "No valid playback frames found in file"
             return
 
         t_file_start = frames[0]["t_s"]
