@@ -38,10 +38,13 @@ _LINE_RE = re.compile(
 
 _BINARY_SYNC = 0xA5
 _BINARY_SYNC_BYTES = bytes([_BINARY_SYNC])
-_BINARY_PACKET_SIZE = 9
+_BINARY_PACKET_SIZE = 10
+_BINARY_PAYLOAD_SIZE = 8
 _BINARY_SCALE_MV = 10.0
 _BINARY_SAMPLES_PER_CYCLE = 156
 _BINARY_FS_HZ = _BINARY_SAMPLES_PER_CYCLE * 50
+_BINARY_SAMPLE_MASK = (1 << 18) - 1
+_BINARY_SIGN_BIT = 1 << 17
 
 
 def _parse_line(line: str) -> Optional[dict]:
@@ -65,19 +68,29 @@ def _binary_checksum(payload: bytes) -> int:
     return checksum
 
 
+def _decode_signed18(value: int) -> int:
+    if value & _BINARY_SIGN_BIT:
+        return value - (1 << 18)
+    return value
+
+
 def _parse_binary_packet(packet: bytes, state: dict) -> Optional[dict]:
     if len(packet) != _BINARY_PACKET_SIZE or packet[0] != _BINARY_SYNC:
         return None
-    if _binary_checksum(packet[1:8]) != packet[8]:
+    if _binary_checksum(packet[1:1 + _BINARY_PAYLOAD_SIZE]) != packet[-1]:
         return None
 
-    sample_pos = packet[1]
+    payload = int.from_bytes(packet[1:1 + _BINARY_PAYLOAD_SIZE], byteorder="little", signed=False)
+    sample_pos = payload & 0xFF
     if sample_pos >= _BINARY_SAMPLES_PER_CYCLE:
         return None
 
-    u1 = int.from_bytes(packet[2:4], byteorder="little", signed=True) * _BINARY_SCALE_MV
-    u2 = int.from_bytes(packet[4:6], byteorder="little", signed=True) * _BINARY_SCALE_MV
-    u3 = int.from_bytes(packet[6:8], byteorder="little", signed=True) * _BINARY_SCALE_MV
+    raw_u1 = (payload >> 8) & _BINARY_SAMPLE_MASK
+    raw_u2 = (payload >> 26) & _BINARY_SAMPLE_MASK
+    raw_u3 = (payload >> 44) & _BINARY_SAMPLE_MASK
+    u1 = _decode_signed18(raw_u1) * _BINARY_SCALE_MV
+    u2 = _decode_signed18(raw_u2) * _BINARY_SCALE_MV
+    u3 = _decode_signed18(raw_u3) * _BINARY_SCALE_MV
 
     last_sample_pos = state.get("last_sample_pos")
     if last_sample_pos is None:

@@ -6,7 +6,7 @@ Real-time oscilloscope for Sagemcom AMR QUAL voltage samples via CLI UART.
 Modes:  Online (COM) | Simulation | Playback (log)
 UART:   USART1 (CLI) at 960000 baud
 Format: ASCII $Q,<u32_sec>,<u16_ms>,<U1_mV>,<U2_mV>,<U3_mV>[,<I1>,<I2>,<I3>]
-    or 9-byte binary frames from the Nucleo simulator
+    or 10-byte binary frames from the Nucleo simulator
 
 Architecture:
   Provider thread → gui_q → GUI timer (33 ms) → _RollingBuffer → PlotWidget

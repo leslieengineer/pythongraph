@@ -9,18 +9,17 @@ Real-time oscilloscope 3 pha bằng Python, nhận dữ liệu đo lường qua 
 - [x] Online UART hiện hỗ trợ 2 kiểu transport:
 	- ASCII legacy: `$Q,<u32_sec>,<u16_ms>,<U1>,<U2>,<U3>,<I1>,<I2>,<I3>`
 	- Binary frame cố định 9 byte cho firmware Nucleo-L476RG
-- [x] Format binary 9 byte/frame:
+- [x] Format binary 10 byte/frame:
 
 ```text
 Byte 0 : 0xA5                  ; sync
-Byte 1 : sample_index (0..155) ; vị trí mẫu trong 1 chu kỳ
-Byte 2 : U1 low byte           ; int16 little-endian, đơn vị 10 mV/LSB
-Byte 3 : U1 high byte
-Byte 4 : U2 low byte
-Byte 5 : U2 high byte
-Byte 6 : U3 low byte
-Byte 7 : U3 high byte
-Byte 8 : XOR checksum của bytes 1..7
+Byte 1..8 : payload 64-bit little-endian
+	- bit 0..7   : sample_index (0..155)
+	- bit 8..25  : U1 signed 18-bit, đơn vị 10 mV/LSB
+	- bit 26..43 : U2 signed 18-bit, đơn vị 10 mV/LSB
+	- bit 44..61 : U3 signed 18-bit, đơn vị 10 mV/LSB
+	- bit 62..63 : reserved = 0
+Byte 9 : XOR checksum của bytes 1..8
 ```
 
 - [x] App Python tự nhận diện ASCII hay binary ở Online (COM), nên vẫn tương thích log/playback cũ
@@ -36,11 +35,11 @@ Byte 8 : XOR checksum của bytes 1..7
 
 - [x] ASCII gửi số dưới dạng text nên mỗi giá trị điện áp 6 chữ số như `229936` đã tốn 6 byte, chưa tính dấu âm nếu có
 - [x] ASCII còn mang theo phần dư thừa mỗi frame: `$Q,`, các dấu phẩy, timestamp `sec,ms`, và `\r\n`
-- [x] Binary gửi trực tiếp 3 giá trị điện áp dạng `int16`, mỗi pha chỉ tốn 2 byte; thêm 1 byte sync, 1 byte sample index, 1 byte checksum là đủ
+- [x] Binary mới đóng gói `sample_index` + 3 giá trị signed 18-bit vào payload 64-bit; vẫn đủ dải đo nhưng không còn bị kẹp như `int16`
 - [x] Binary bỏ timestamp lặp lại ở từng frame; chỉ cần `sample_index` 0..155 rồi app tự nội suy thời gian theo 7800 Hz
 - [x] Với UART 8N1, mỗi byte trên dây thực tế tiêu tốn khoảng 10 bit
 - [x] ASCII cũ thường rơi vào khoảng 30 đến 40 byte/frame => khoảng 2.34 đến 3.12 Mbit/s ở 7800 frame/s, vượt xa 960000 baud
-- [x] Binary mới cố định 9 byte/frame => khoảng 702 kbit/s ở 7800 frame/s, nên nằm trong ngưỡng 960000 baud
+- [x] Binary mới cố định 10 byte/frame => khoảng 780 kbit/s ở 7800 frame/s, vẫn nằm dưới 960000 baud
 - [x] Đổi lại, binary không còn dễ đọc bằng mắt thường trên serial terminal và cần sync/checksum để bắt lỗi khung
 
 ---
