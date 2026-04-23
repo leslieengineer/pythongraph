@@ -20,11 +20,26 @@ _SENTINEL = object()   # poison pill to stop the writer thread
 _CSV_HEADER = ["t_s", "U1_mV", "U2_mV", "U3_mV"]
 
 
-def prepare_csv_log(path: str):
+def export_csv_snapshot(path: str, t_values, u_values):
+    """Write a complete CSV snapshot immediately and return the row count."""
+    csv_path = Path(path)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    row_count = 0
+    with csv_path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(_CSV_HEADER)
+        for t_s, u1, u2, u3 in zip(t_values, u_values[0], u_values[1], u_values[2]):
+            writer.writerow([f"{float(t_s):.6f}", f"{float(u1):.3f}", f"{float(u2):.3f}", f"{float(u3):.3f}"])
+            row_count += 1
+        fh.flush()
+    return row_count
+
+
+def prepare_csv_log(path: str, overwrite: bool = False):
     """Ensure the CSV path exists and contains the header row."""
     csv_path = Path(path)
     csv_path.parent.mkdir(parents=True, exist_ok=True)
-    if csv_path.exists() and csv_path.stat().st_size > 0:
+    if not overwrite and csv_path.exists() and csv_path.stat().st_size > 0:
         return
     with csv_path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
@@ -44,13 +59,14 @@ class QualDataLogger:
         logger.stop()   # flushes remaining frames and closes file
     """
 
-    def __init__(self, path: str, in_q: queue.Queue):
+    def __init__(self, path: str, in_q: queue.Queue, truncate: bool = False):
         self._path  = Path(path)
         self._q     = in_q
         self._thread: Optional[threading.Thread] = None
         self.rows_written = 0
         self.error: Optional[str] = None
         self._flush_every = 256
+        self._truncate = truncate
 
     def start(self):
         self._thread = threading.Thread(target=self._run, daemon=True, name="QualLogger")
@@ -71,9 +87,13 @@ class QualDataLogger:
     def _run(self):
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            with self._path.open("w", newline="", encoding="utf-8") as fh:
+            file_has_rows = self._path.exists() and self._path.stat().st_size > 0
+            file_mode = "w" if self._truncate else "a"
+            with self._path.open(file_mode, newline="", encoding="utf-8") as fh:
                 writer = csv.writer(fh)
-                writer.writerow(_CSV_HEADER)
+                if self._truncate or not file_has_rows:
+                    writer.writerow(_CSV_HEADER)
+                    fh.flush()
                 pending_since_flush = 0
                 while True:
                     try:

@@ -29,7 +29,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QStatusBar, QVBoxLayout, QWidget,
 )
 
-from logger import QualDataLogger, prepare_csv_log
+from logger import QualDataLogger, export_csv_snapshot, prepare_csv_log
 from providers import (
     QualFileProvider, QualSerialProvider, QualSimulationProvider,
     list_serial_ports,
@@ -137,6 +137,21 @@ class _RollingBuffer:
         self._head = 0
         self._size = 0
 
+    def all_data(self):
+        if self._size == 0:
+            empty = np.empty(0, dtype=np.float64)
+            return empty, [empty, empty, empty]
+
+        if self._size < self._cap:
+            t_all = self._t[:self._size].copy()
+            u_all = [self._u[ph, :self._size].copy() for ph in range(3)]
+            return t_all, u_all
+
+        idx = (np.arange(self._size) + self._head) % self._cap
+        t_all = self._t[idx].copy()
+        u_all = [self._u[ph, idx].copy() for ph in range(3)]
+        return t_all, u_all
+
     @property
     def sample_count(self):
         return self._size
@@ -176,6 +191,7 @@ class QualMainWindow(QMainWindow):
 
         self._play_path = ""
         self._log_path  = self._default_log_path()
+        self._log_overwrite_requested = False
         self._latest_t = np.empty(0, dtype=np.float64)
         self._latest_u = [
             np.empty(0, dtype=np.float32),
@@ -218,9 +234,26 @@ class QualMainWindow(QMainWindow):
         log_dir = Path(self._log_path).resolve().parent
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(log_dir)))
 
+    def _consume_log_overwrite_request(self):
+        overwrite = self._log_overwrite_requested
+        self._log_overwrite_requested = False
+        return overwrite
+
     def _prime_log_file(self):
-        prepare_csv_log(self._log_path)
+        prepare_csv_log(self._log_path, overwrite=self._consume_log_overwrite_request())
         self._set_log_button_armed()
+
+    def _export_buffer_to_csv(self):
+        self._consume_log_overwrite_request()
+        t_all, u_all = self._buf.all_data()
+        rows_written = export_csv_snapshot(self._log_path, t_all, u_all)
+        if self._chk_log.isChecked():
+            self._set_log_button_armed()
+            self._lbl_status.setText(
+                f"Saved {rows_written} buffered rows → {self._log_path}  |  Press Start to record")
+        else:
+            self._set_log_button_idle()
+            self._lbl_status.setText(f"Saved {rows_written} buffered rows → {self._log_path}")
 
     # ------------------------------------------------------------------ UI
 
@@ -475,11 +508,15 @@ class QualMainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(
             self, "Save CSV log", self._log_path, "CSV files (*.csv)")
         if path:
-            self._log_path = self._normalize_log_path(path)
+            normalized_path = self._normalize_log_path(path)
+            self._log_overwrite_requested = Path(normalized_path).exists()
+            self._log_path = normalized_path
             if self._provider is not None and self._logger is not None:
                 self._stop_logger()
                 self._start_logger()
                 self._lbl_status.setText(f"Running  |  Logging to: {self._log_path}")
+            elif self._provider is None:
+                self._export_buffer_to_csv()
             elif self._chk_log.isChecked():
                 self._prime_log_file()
                 self._lbl_status.setText(
@@ -492,7 +529,11 @@ class QualMainWindow(QMainWindow):
         if self._logger is not None:
             return
         self._log_q = queue.Queue()
-        self._logger = QualDataLogger(self._log_path, self._log_q)
+        self._logger = QualDataLogger(
+            self._log_path,
+            self._log_q,
+            truncate=self._consume_log_overwrite_request(),
+        )
         self._logger.start()
         if self._provider is not None:
             self._provider.set_mirror_queue(self._log_q)
