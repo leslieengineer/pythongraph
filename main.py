@@ -26,7 +26,7 @@ from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox,
     QFileDialog, QGroupBox, QHBoxLayout, QLabel, QMainWindow,
-    QPushButton, QStatusBar, QVBoxLayout, QWidget,
+    QPushButton, QSlider, QStatusBar, QVBoxLayout, QWidget,
 )
 
 from logger import QualDataLogger, export_csv_snapshot, prepare_csv_log
@@ -48,6 +48,7 @@ GUI_QUEUE_MAX  = int(QUAL_FS_HZ * 50 * GUI_QUEUE_SECS)
 RENDER_SOFT_LIMIT = 20_000
 SAMPLE_DOT_RENDER_LIMIT = 4_000
 SAMPLE_DOT_SIZE = 4
+HISTORY_SLIDER_STEPS = 2_000
 
 WINDOW_OPTS = ("0.02", "0.04", "0.10", "0.20", "0.50", "1", "3", "5", "10", "30", "60", "120")
 DEFAULT_WIN = "0.20"
@@ -154,6 +155,59 @@ class _RollingBuffer:
         u_all = [self._u[ph, idx].copy() for ph in range(3)]
         return t_all, u_all
 
+    def time_bounds(self):
+        if self._size == 0:
+            return None, None
+
+        if self._size < self._cap:
+            return float(self._t[0]), float(self._t[self._size - 1])
+
+        oldest_idx = self._head
+        newest_idx = (self._head - 1) % self._cap
+        return float(self._t[oldest_idx]), float(self._t[newest_idx])
+
+    def latest_time(self):
+        _, latest_t = self.time_bounds()
+        return latest_t
+
+    def view_around(self, window_s: float, focus_t: float):
+        if self._size == 0:
+            empty = np.empty(0, dtype=np.float64)
+            return empty, empty, [empty, empty, empty], 0.0, 0.0, 0.0
+
+        t_all, u_all = self.all_data()
+        min_t = float(t_all[0])
+        max_t = float(t_all[-1])
+        focus_t = float(min(max(focus_t, min_t), max_t))
+
+        if window_s <= 0.0:
+            window_s = max(max_t - min_t, 0.02)
+
+        half_window = 0.5 * window_s
+        window_start = focus_t - half_window
+        window_end = focus_t + half_window
+
+        if window_start < min_t:
+            window_start = min_t
+            window_end = min_t + window_s
+        if window_end > max_t:
+            window_end = max_t
+            window_start = max_t - window_s
+        window_start = max(min_t, window_start)
+
+        left = int(np.searchsorted(t_all, window_start, side="left"))
+        right = int(np.searchsorted(t_all, window_end, side="right"))
+        if right <= left:
+            nearest = int(np.searchsorted(t_all, focus_t, side="left"))
+            nearest = max(0, min(nearest, len(t_all) - 1))
+            left = nearest
+            right = nearest + 1
+
+        t_view = t_all[left:right]
+        t_rel = t_view - window_start
+        u_v = [u_all[ph][left:right] for ph in range(3)]
+        return t_rel, t_view, u_v, window_start, min(window_start + window_s, max_t), focus_t
+
     @property
     def sample_count(self):
         return self._size
@@ -195,7 +249,21 @@ class QualMainWindow(QMainWindow):
         self._log_path  = self._default_log_path()
         self._log_overwrite_requested = False
         self._latest_t = np.empty(0, dtype=np.float64)
+        self._latest_t_abs = np.empty(0, dtype=np.float64)
         self._latest_u = [
+            np.empty(0, dtype=np.float32),
+            np.empty(0, dtype=np.float32),
+            np.empty(0, dtype=np.float32),
+        ]
+        self._view_start_t = 0.0
+        self._view_end_t = 0.0
+        self._history_mode = False
+        self._history_target_t = None
+        self._history_slider_dragging = False
+        self._history_spin_editing = False
+        self._history_snapshot_dirty = True
+        self._history_snapshot_t = np.empty(0, dtype=np.float64)
+        self._history_snapshot_u = [
             np.empty(0, dtype=np.float32),
             np.empty(0, dtype=np.float32),
             np.empty(0, dtype=np.float32),
@@ -411,6 +479,41 @@ class QualMainWindow(QMainWindow):
         opt_row.addStretch(1)
         root.addLayout(opt_row)
 
+        hist_row = QHBoxLayout()
+        hist_row.addWidget(QLabel("Go to (s):"))
+
+        self._spin_history = QDoubleSpinBox()
+        self._spin_history.setRange(0.0, BUFFER_SECS)
+        self._spin_history.setDecimals(4)
+        self._spin_history.setSingleStep(0.01)
+        self._spin_history.setKeyboardTracking(False)
+        self._spin_history.setFixedWidth(96)
+        self._spin_history.lineEdit().textEdited.connect(self._on_history_text_edited)
+        self._spin_history.editingFinished.connect(self._on_history_go)
+        hist_row.addWidget(self._spin_history)
+
+        self._btn_history_go = QPushButton("Go")
+        self._btn_history_go.clicked.connect(self._on_history_go)
+        hist_row.addWidget(self._btn_history_go)
+
+        self._btn_back_to_live = QPushButton("Back to live")
+        self._btn_back_to_live.clicked.connect(self._on_back_to_live)
+        hist_row.addWidget(self._btn_back_to_live)
+
+        self._sld_history = QSlider(Qt.Horizontal)
+        self._sld_history.setRange(0, HISTORY_SLIDER_STEPS)
+        self._sld_history.setTracking(True)
+        self._sld_history.sliderPressed.connect(self._on_history_slider_pressed)
+        self._sld_history.sliderReleased.connect(self._on_history_slider_released)
+        self._sld_history.valueChanged.connect(self._on_history_slider_changed)
+        hist_row.addWidget(self._sld_history, stretch=1)
+
+        self._lbl_history_state = QLabel("Live: waiting for buffer")
+        self._lbl_history_state.setStyleSheet("color:#AAB2D5; padding-left:8px;")
+        hist_row.addWidget(self._lbl_history_state)
+
+        root.addLayout(hist_row)
+
         # Plot placeholder
         self._plot_area = QVBoxLayout()
         root.addLayout(self._plot_area, stretch=1)
@@ -443,6 +546,7 @@ class QualMainWindow(QMainWindow):
 
         self._refresh_ports()
         self._on_mode_changed(0)
+        self._update_history_controls()
 
     # ------------------------------------------------------------------ Plot
 
@@ -467,8 +571,19 @@ class QualMainWindow(QMainWindow):
         _cp = pg.mkPen(color="#FFFFFF90", width=1, style=Qt.DashLine)
         self._vline = pg.InfiniteLine(angle=90, movable=False, pen=_cp)
         self._hline = pg.InfiniteLine(angle=0,  movable=False, pen=_cp)
+
+        zero_pen = pg.mkPen(color="#7FDBFF", width=1)
+        self._zero_hline = pg.InfiniteLine(angle=0, movable=False, pen=zero_pen)
+        self._zero_hline.setPos(0.0)
+
+        self._pw.addItem(self._zero_hline, ignoreBounds=True)
         self._pw.addItem(self._vline, ignoreBounds=True)
         self._pw.addItem(self._hline, ignoreBounds=True)
+
+        history_pen = pg.mkPen(color="#FFD866", width=2, style=Qt.DashLine)
+        self._history_vline = pg.InfiniteLine(angle=90, movable=False, pen=history_pen)
+        self._history_vline.setVisible(False)
+        self._pw.addItem(self._history_vline, ignoreBounds=True)
 
         # Mouse proxy (throttled 60 Hz)
         self._mouse_proxy = pg.SignalProxy(
@@ -607,11 +722,36 @@ class QualMainWindow(QMainWindow):
     def _on_start(self):
         self._stop_provider()
         self._buf.reset()
+        self._history_snapshot_dirty = True
+        self._history_snapshot_t = np.empty(0, dtype=np.float64)
+        self._history_snapshot_u = [
+            np.empty(0, dtype=np.float32),
+            np.empty(0, dtype=np.float32),
+            np.empty(0, dtype=np.float32),
+        ]
         self._frames_total = self._frames_since = 0
         self._tick_ts = time.monotonic()
         self._fs_samples_last = 0
         self._fs_ts_last = time.monotonic()
         self._fs_hz = 0.0
+        self._history_mode = False
+        self._history_target_t = None
+        self._latest_t = np.empty(0, dtype=np.float64)
+        self._latest_t_abs = np.empty(0, dtype=np.float64)
+        self._latest_u = [
+            np.empty(0, dtype=np.float32),
+            np.empty(0, dtype=np.float32),
+            np.empty(0, dtype=np.float32),
+        ]
+        self._view_start_t = 0.0
+        self._view_end_t = 0.0
+        self._btn_freeze.blockSignals(True)
+        self._btn_freeze.setChecked(False)
+        self._btn_freeze.blockSignals(False)
+        self._frozen = False
+        self._btn_freeze.setText("❚❚ Freeze")
+        self._lbl_cursor.setText("Cursor: —")
+        self._update_history_controls()
 
         mode = self._cb_mode.currentIndex()
         if mode == 0:
@@ -665,23 +805,32 @@ class QualMainWindow(QMainWindow):
             self._provider = None
         pending_frames = self._drain_gui_queue()
         if pending_frames and not self._frozen:
-            self._latest_t, self._latest_u = self._buf.view(self._win_s)
+            if self._history_mode and self._history_target_t is not None:
+                self._show_history_view(self._history_target_t)
+            else:
+                self._show_live_view()
         if self._logger is not None:
             stop_message = self._stop_logger()
+        self._update_history_controls()
         return stop_message
 
     def _on_freeze(self, checked):
         self._frozen = checked
         self._btn_freeze.setText("▶ Resume" if checked else "❚❚ Freeze")
+        if not checked and self._buf.sample_count > 0:
+            if self._history_mode and self._history_target_t is not None:
+                self._show_history_view(self._history_target_t)
+            else:
+                self._show_live_view()
 
     def _on_window_changed(self, v):
         self._win_s = float(v)
         self._pw.setXRange(0.0, self._win_s, padding=0.0)
         if self._buf.sample_count > 0:
-            t, u_v = self._buf.view(self._win_s)
-            self._latest_t = t
-            self._latest_u = u_v
-            self._render_plot(t, u_v)
+            if self._history_mode and self._history_target_t is not None:
+                self._show_history_view(self._history_target_t)
+            else:
+                self._show_live_view()
 
     def _on_ugain_changed(self, v):
         self._u_gain = v
@@ -709,6 +858,240 @@ class QualMainWindow(QMainWindow):
         if len(self._latest_t) > 0:
             self._render_plot(self._latest_t, self._latest_u)
 
+    def _set_history_spin_value(self, value):
+        if value < self._spin_history.minimum() or value > self._spin_history.maximum():
+            self._spin_history.setRange(
+                min(self._spin_history.minimum(), value),
+                max(self._spin_history.maximum(), value),
+            )
+        self._spin_history.blockSignals(True)
+        self._spin_history.setValue(value)
+        self._spin_history.blockSignals(False)
+
+    def _on_history_text_edited(self, _text):
+        self._history_spin_editing = True
+
+    def _set_history_spin_range(self, min_t, max_t, preserve_text=False):
+        line_edit = self._spin_history.lineEdit()
+        restore_text = None
+        restore_cursor = None
+        if preserve_text:
+            restore_text = line_edit.text()
+            restore_cursor = line_edit.cursorPosition()
+
+        self._spin_history.blockSignals(True)
+        self._spin_history.setRange(min_t, max_t)
+        self._spin_history.blockSignals(False)
+
+        if restore_text is not None:
+            line_edit.blockSignals(True)
+            line_edit.setText(restore_text)
+            line_edit.setCursorPosition(min(restore_cursor, len(restore_text)))
+            line_edit.blockSignals(False)
+
+    def _current_history_input_value(self):
+        text = self._spin_history.lineEdit().text().strip()
+        try:
+            return float(text)
+        except ValueError:
+            return float(self._spin_history.value())
+
+    def _mark_history_snapshot_dirty(self):
+        self._history_snapshot_dirty = True
+
+    def _get_history_snapshot(self, prefer_stale=False):
+        if prefer_stale and len(self._history_snapshot_t) > 0 and self._history_snapshot_dirty:
+            return self._history_snapshot_t, self._history_snapshot_u
+
+        if self._history_snapshot_dirty:
+            if hasattr(self._buf, "all_data"):
+                t_all, u_all = self._buf.all_data()
+            elif hasattr(self._buf, "get_all"):
+                t_all, u_all = self._buf.get_all()
+            else:
+                raise AttributeError("buffer must provide all_data() or get_all()")
+            self._history_snapshot_t = t_all
+            self._history_snapshot_u = u_all
+            self._history_snapshot_dirty = False
+        return self._history_snapshot_t, self._history_snapshot_u
+
+    @staticmethod
+    def _slice_history_snapshot(t_all, u_all, window_s, focus_t):
+        if len(t_all) == 0:
+            empty = np.empty(0, dtype=np.float64)
+            return empty, empty, [empty, empty, empty], 0.0, 0.0, 0.0
+
+        min_t = float(t_all[0])
+        max_t = float(t_all[-1])
+        focus_t = float(min(max(focus_t, min_t), max_t))
+
+        if window_s <= 0.0:
+            window_s = max(max_t - min_t, 0.02)
+
+        half_window = 0.5 * window_s
+        window_start = focus_t - half_window
+        window_end = focus_t + half_window
+
+        if window_start < min_t:
+            window_start = min_t
+            window_end = min_t + window_s
+        if window_end > max_t:
+            window_end = max_t
+            window_start = max_t - window_s
+        window_start = max(min_t, window_start)
+
+        left = int(np.searchsorted(t_all, window_start, side="left"))
+        right = int(np.searchsorted(t_all, window_end, side="right"))
+        if right <= left:
+            nearest = int(np.searchsorted(t_all, focus_t, side="left"))
+            nearest = max(0, min(nearest, len(t_all) - 1))
+            left = nearest
+            right = nearest + 1
+
+        t_view = t_all[left:right]
+        t_rel = t_view - window_start
+        u_v = [u_all[ph][left:right] for ph in range(3)]
+        return t_rel, t_view, u_v, window_start, min(window_start + window_s, max_t), focus_t
+
+    @staticmethod
+    def _time_to_slider_value(t_s, min_t, max_t):
+        if max_t <= min_t:
+            return 0
+        ratio = (t_s - min_t) / (max_t - min_t)
+        ratio = min(max(ratio, 0.0), 1.0)
+        return int(round(ratio * HISTORY_SLIDER_STEPS))
+
+    @staticmethod
+    def _slider_value_to_time(value, min_t, max_t):
+        if max_t <= min_t:
+            return min_t
+        ratio = float(value) / float(HISTORY_SLIDER_STEPS)
+        return min_t + ratio * (max_t - min_t)
+
+    def _apply_view(self, t_rel, t_abs, u_v, window_start_t, window_end_t):
+        self._latest_t = t_rel
+        self._latest_t_abs = t_abs
+        self._latest_u = u_v
+        self._view_start_t = float(window_start_t)
+        self._view_end_t = float(window_end_t)
+
+    def _update_history_marker(self):
+        if not self._history_mode or self._history_target_t is None:
+            self._history_vline.setVisible(False)
+            return
+
+        marker_x = self._history_target_t - self._view_start_t
+        marker_x = min(max(marker_x, 0.0), self._win_s)
+        self._history_vline.setPos(marker_x)
+        self._history_vline.setVisible(True)
+
+    def _show_live_view(self):
+        if self._buf.sample_count == 0:
+            return [0.0, 0.0, 0.0]
+
+        t_rel, u_v = self._buf.view(self._win_s)
+        latest_t = self._buf.latest_time()
+        if latest_t is None or len(t_rel) == 0:
+            return [0.0, 0.0, 0.0]
+
+        window_start_t = latest_t - self._win_s
+        t_abs = t_rel + window_start_t
+        self._apply_view(t_rel, t_abs, u_v, window_start_t, latest_t)
+        self._update_history_marker()
+        self._update_history_controls()
+        return self._render_plot(t_rel, u_v)
+
+    def _show_history_view(self, target_t):
+        if getattr(self._buf, "sample_count", 0) == 0:
+            return [0.0, 0.0, 0.0]
+
+        t_all, u_all = self._get_history_snapshot(prefer_stale=self._history_slider_dragging)
+        t_rel, t_abs, u_v, window_start_t, window_end_t, focus_t = self._slice_history_snapshot(
+            t_all,
+            u_all,
+            self._win_s,
+            target_t,
+        )
+        self._history_mode = True
+        self._history_target_t = focus_t
+        self._apply_view(t_rel, t_abs, u_v, window_start_t, window_end_t)
+        self._update_history_marker()
+        self._update_history_controls()
+        return self._render_plot(t_rel, u_v)
+
+    def _update_history_controls(self):
+        min_t, max_t = self._buf.time_bounds()
+        has_data = min_t is not None and max_t is not None
+        spin_is_editing = self._history_spin_editing or self._spin_history.hasFocus()
+
+        self._btn_history_go.setEnabled(has_data)
+        self._btn_back_to_live.setEnabled(has_data and self._history_mode)
+        self._sld_history.setEnabled(has_data and max_t > min_t)
+
+        if not has_data:
+            self._lbl_history_state.setText("Live: waiting for buffer")
+            if not spin_is_editing:
+                self._set_history_spin_value(0.0)
+            if not self._history_slider_dragging:
+                self._sld_history.blockSignals(True)
+                self._sld_history.setValue(HISTORY_SLIDER_STEPS)
+                self._sld_history.blockSignals(False)
+            return
+
+        current_target = max_t if (not self._history_mode or self._history_target_t is None) else self._history_target_t
+        current_target = min(max(current_target, min_t), max_t)
+
+        self._set_history_spin_range(min_t, max_t, preserve_text=spin_is_editing)
+
+        if not spin_is_editing:
+            self._set_history_spin_value(current_target)
+
+        if not self._history_slider_dragging:
+            self._sld_history.blockSignals(True)
+            self._sld_history.setValue(self._time_to_slider_value(current_target, min_t, max_t))
+            self._sld_history.blockSignals(False)
+
+        if self._history_mode:
+            self._lbl_history_state.setText(
+                f"History: {self._view_start_t:.4f}s .. {self._view_end_t:.4f}s")
+        else:
+            self._lbl_history_state.setText(
+                f"Live: {max_t:.4f}s  |  Buffer {min_t:.4f}s .. {max_t:.4f}s")
+
+    def _on_history_go(self):
+        if self._buf.sample_count == 0:
+            self._history_spin_editing = False
+            self._lbl_status.setText("No buffered data to review yet")
+            return
+        self._history_spin_editing = False
+        self._show_history_view(self._current_history_input_value())
+        self._lbl_status.setText(f"History  |  jumped to t={self._history_target_t:.4f}s")
+
+    def _on_history_slider_changed(self, value):
+        min_t, max_t = self._buf.time_bounds()
+        if min_t is None or max_t is None:
+            return
+        target_t = self._slider_value_to_time(value, min_t, max_t)
+        self._show_history_view(target_t)
+        self._lbl_status.setText(f"History  |  scrubbed to t={self._history_target_t:.4f}s")
+
+    def _on_history_slider_pressed(self):
+        self._history_slider_dragging = True
+
+    def _on_history_slider_released(self):
+        self._history_slider_dragging = False
+        self._update_history_controls()
+
+    def _on_back_to_live(self):
+        self._history_mode = False
+        self._history_target_t = None
+        self._update_history_marker()
+        if self._buf.sample_count > 0:
+            self._show_live_view()
+            self._lbl_status.setText("Live view resumed")
+        else:
+            self._update_history_controls()
+
     def _drain_gui_queue(self):
         new_frames = 0
         while True:
@@ -719,6 +1102,7 @@ class QualMainWindow(QMainWindow):
             new_frames += 1
             self._frames_total += 1
             self._buf.push(frame["t_s"], frame["u"])
+            self._mark_history_snapshot_dirty()
         return new_frames
 
     def _prepare_render_view(self, t, u_v):
@@ -757,23 +1141,35 @@ class QualMainWindow(QMainWindow):
         if len(self._latest_t) > 0:
             self._render_plot(self._latest_t, self._latest_u)
         elif self._buf.sample_count > 0:
-            t, u_v = self._buf.view(self._win_s)
-            self._latest_t = t
-            self._latest_u = u_v
-            self._render_plot(t, u_v)
+            if self._history_mode and self._history_target_t is not None:
+                self._show_history_view(self._history_target_t)
+            else:
+                self._show_live_view()
 
     # ------------------------------------------------------------------ Timer tick
 
     def _on_tick(self):
         new_frames = self._drain_gui_queue()
 
-        if self._frozen or (new_frames == 0 and self._buf.sample_count == 0):
-            return
+        rms_u = _RollingBuffer.rms(self._latest_u) if len(self._latest_t) > 0 else [0.0, 0.0, 0.0]
 
-        t, u_v = self._buf.view(self._win_s)
-        self._latest_t = t
-        self._latest_u = u_v
-        rms_u = self._render_plot(t, u_v)
+        if not self._frozen and self._buf.sample_count > 0:
+            if self._history_mode and self._history_target_t is not None:
+                min_t, max_t = self._buf.time_bounds()
+                if min_t is not None and max_t is not None:
+                    if self._history_target_t < min_t or self._history_target_t > max_t:
+                        rms_u = self._show_history_view(self._history_target_t)
+                    else:
+                        self._update_history_controls()
+            elif new_frames > 0 or len(self._latest_t) == 0:
+                rms_u = self._show_live_view()
+            else:
+                self._update_history_controls()
+        elif self._buf.sample_count > 0:
+            self._update_history_controls()
+
+        if self._provider is None and new_frames == 0 and self._buf.sample_count == 0:
+            return
 
         # ── Status bar updates ────────────────────────────────────────
         now = time.monotonic()
@@ -826,15 +1222,20 @@ class QualMainWindow(QMainWindow):
         self._hline.setPos(mp.y())
 
         # Snap to nearest sample
-        t = self._latest_t
+        t_rel = self._latest_t
+        t_abs = self._latest_t_abs if len(self._latest_t_abs) == len(self._latest_t) else self._latest_t
         u_v = self._latest_u
-        if len(t) < 1:
+        if len(t_rel) < 1:
             self._lbl_cursor.setText("Cursor: —")
             return
 
-        idx   = int(np.searchsorted(t, x))
-        idx   = max(0, min(idx, len(t) - 1))
-        t_val = float(t[idx])
+        idx = int(np.searchsorted(t_rel, x))
+        idx = max(0, min(idx, len(t_rel) - 1))
+        if idx > 0 and abs(t_rel[idx - 1] - x) <= abs(t_rel[idx] - x):
+            idx -= 1
+
+        self._vline.setPos(float(t_rel[idx]))
+        t_val = float(t_abs[idx])
         u_vals = [
             float(u_v[k][idx]) if len(u_v[k]) > idx else 0.0
             for k in range(3)

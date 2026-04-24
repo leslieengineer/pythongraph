@@ -1,4 +1,6 @@
-numpy
-pyqtgraph
-PyQt5
-pyserial
+# Release-tested on Windows with official CPython 3.13.5.
+# Prefer official CPython 3.12+ or 3.13+ for installation.
+numpy==2.4.4
+PyQt5==5.15.11
+pyqtgraph==0.14.0
+pyserial==3.5
