@@ -1,119 +1,154 @@
-# QUAL Waveform Viewer — Yêu cầu dự án
+# QUAL Waveform Viewer
 
-Real-time oscilloscope 3 pha bằng Python, nhận dữ liệu đo lường qua UART từ thiết bị Sagemcom AMR.
+Real-time voltage waveform viewer cho dữ liệu QUAL từ Sagemcom AMR qua UART, mô phỏng nội bộ, hoặc playback từ file log.
 
----
+Project hiện tập trung vào 3 kênh điện áp `U1/U2/U3`. Các phần test, script validation, và mã cũ đã được loại khỏi bundle release này để giữ repo gọn cho phát hành.
 
-## Dữ liệu & Giao thức
+## Tính năng chính
 
-- [x] Online UART hiện hỗ trợ 2 kiểu transport:
-	- ASCII legacy: `$Q,<u32_sec>,<u16_ms>,<U1>,<U2>,<U3>,<I1>,<I2>,<I3>`
-	- Binary frame cố định 9 byte cho firmware Nucleo-L476RG
-- [x] Format binary 10 byte/frame:
+- Hiển thị real-time 3 pha điện áp trên một đồ thị duy nhất.
+- Hỗ trợ 3 mode:
+	- `Online (COM)` đọc từ UART.
+	- `Simulation` tạo sóng sin 3 pha nội bộ.
+	- `Playback (log)` phát lại từ file log đã lưu.
+- Tự nhận diện 2 kiểu dữ liệu ở Online:
+	- ASCII legacy: `$Q,<u32_sec>,<u16_ms>,<U1>,<U2>,<U3>[,<I1>,<I2>,<I3>]`
+	- Binary frame 10 byte của firmware Nucleo.
+- Rolling buffer tối đa 120 giây, chỉ render cửa sổ thời gian đang chọn.
+- Crosshair bám chuột và snap tới mẫu gần nhất.
+- Hiển thị `V_rms`, `fs`, `fps`, số frame/line trong status bar.
+- Ghi log CSV bất đồng bộ sang file.
+- Có tùy chọn `Sample dots` để hiện mỗi mẫu là một chấm khi mật độ điểm còn thấp.
+- Tự tắt marker mẫu khi số điểm render quá lớn để tránh tụt hiệu năng.
+
+## Cấu trúc release
+
+- `main.py`: giao diện PyQt5, rolling buffer, render, trạng thái ứng dụng.
+- `providers.py`: Serial provider, Simulation provider, Playback provider.
+- `logger.py`: logger CSV nền và xuất snapshot buffer.
+- `requirements.txt`: dependency tối thiểu để chạy ứng dụng.
+- `Readme.md`: tài liệu phát hành.
+
+## Yêu cầu môi trường
+
+- Python 3.12 đã được dùng trong workspace hiện tại.
+- Các package Python cần có:
+	- `numpy`
+	- `pyqtgraph`
+	- `PyQt5`
+	- `pyserial`
+
+Lệnh cài đặt nhanh:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+Hoặc cài trực tiếp:
+
+```bash
+python -m pip install numpy pyqtgraph PyQt5 pyserial
+```
+
+## Cách chạy
+
+```bash
+python main.py
+```
+
+## Hướng dẫn sử dụng nhanh
+
+### 1. Online (COM)
+
+- Chọn `Mode = Online (COM)`.
+- Chọn `Port` và `Baud`.
+- Baud mặc định của project là `960000`.
+- Nhấn `Start` để bắt đầu đọc dữ liệu từ thiết bị.
+
+### 2. Simulation
+
+- Chọn `Mode = Simulation`.
+- Cấu hình `Freq`, `V_rms`, `phi` nếu cần.
+- Nhấn `Start` để chạy nguồn dữ liệu giả lập.
+
+### 3. Playback (log)
+
+- Chọn `Mode = Playback (log)`.
+- Nhấn `Log…` để chọn file phát lại.
+- Điều chỉnh `Speed` nếu muốn tua nhanh/chậm.
+- Nhấn `Start` để phát lại theo timestamp trong file.
+
+## Điều khiển hiển thị
+
+- `Window (s)`: chọn độ dài cửa sổ hiển thị.
+- `Y zoom (x)`: chỉ thay đổi độ phóng trục Y để quan sát, không đổi giá trị dữ liệu thật.
+- `U1`, `U2`, `U3`: ẩn/hiện từng kênh.
+- `Sample dots`: bật/tắt marker từng mẫu.
+
+Marker mẫu chỉ hiện khi số điểm đang render không vượt ngưỡng nội bộ. Với cửa sổ ngắn, mỗi mẫu sẽ có chấm rõ ràng; với cửa sổ dài, ứng dụng tự quay về line-only để giữ FPS.
+
+## Logging CSV
+
+- Tick `Log to CSV` để arm logging.
+- Chọn file đích bằng nút tên file CSV.
+- Nếu app đang dừng, chọn file CSV sẽ xuất ngay snapshot buffer hiện có.
+- Nếu app đang chạy và logging bật, dữ liệu mới sẽ được ghi nền sang CSV.
+
+Format file CSV do app ghi:
 
 ```text
-Byte 0 : 0xA5                  ; sync
+t_s,U1_mV,U2_mV,U3_mV
+```
+
+## Dữ liệu đầu vào được hỗ trợ
+
+### ASCII legacy
+
+```text
+$Q,<u32_sec>,<u16_ms>,<U1>,<U2>,<U3>
+```
+
+App chỉ dùng 3 giá trị điện áp đầu tiên cho release hiện tại.
+
+### Binary frame 10 byte
+
+```text
+Byte 0 : 0xA5
 Byte 1..8 : payload 64-bit little-endian
 	- bit 0..7   : sample_index (0..155)
-	- bit 8..25  : U1 signed 18-bit, đơn vị 10 mV/LSB
-	- bit 26..43 : U2 signed 18-bit, đơn vị 10 mV/LSB
-	- bit 44..61 : U3 signed 18-bit, đơn vị 10 mV/LSB
-	- bit 62..63 : reserved = 0
+	- bit 8..25  : U1 signed 18-bit, 10 mV/LSB
+	- bit 26..43 : U2 signed 18-bit, 10 mV/LSB
+	- bit 44..61 : U3 signed 18-bit, 10 mV/LSB
 Byte 9 : XOR checksum của bytes 1..8
 ```
 
-- [x] App Python tự nhận diện ASCII hay binary ở Online (COM), nên vẫn tương thích log/playback cũ
-- [x] Baudrate mặc định: **960000** (USART1 / CLI port)
-- [x] 156 mẫu mỗi chu kỳ (~7800 mẫu/giây ở 50 Hz)
-- [x] Với ASCII: parse timestamp từ `u32_sec` + `u16_ms` → trục X đơn vị giây (độ chính xác ms)
-- [x] Với binary: không gửi timestamp mỗi frame; app tái dựng thời gian từ `sample_index` và tốc độ 7800 Hz (~128.205 µs/mẫu)
-- [x] Đọc UART trên thread riêng (không block giao diện)
+### Playback file
 
----
+App hỗ trợ playback từ:
 
-## Vì sao Binary giảm payload?
+- Dòng ASCII legacy bắt đầu bằng `$Q,`
+- Hoặc CSV đã được app export với header `t_s,U1_mV,U2_mV,U3_mV`
 
-- [x] ASCII gửi số dưới dạng text nên mỗi giá trị điện áp 6 chữ số như `229936` đã tốn 6 byte, chưa tính dấu âm nếu có
-- [x] ASCII còn mang theo phần dư thừa mỗi frame: `$Q,`, các dấu phẩy, timestamp `sec,ms`, và `\r\n`
-- [x] Binary mới đóng gói `sample_index` + 3 giá trị signed 18-bit vào payload 64-bit; vẫn đủ dải đo nhưng không còn bị kẹp như `int16`
-- [x] Binary bỏ timestamp lặp lại ở từng frame; chỉ cần `sample_index` 0..155 rồi app tự nội suy thời gian theo 7800 Hz
-- [x] Với UART 8N1, mỗi byte trên dây thực tế tiêu tốn khoảng 10 bit
-- [x] ASCII cũ thường rơi vào khoảng 30 đến 40 byte/frame => khoảng 2.34 đến 3.12 Mbit/s ở 7800 frame/s, vượt xa 960000 baud
-- [x] Binary mới cố định 10 byte/frame => khoảng 780 kbit/s ở 7800 frame/s, vẫn nằm dưới 960000 baud
-- [x] Đổi lại, binary không còn dễ đọc bằng mắt thường trên serial terminal và cần sync/checksum để bắt lỗi khung
+## Hành vi quan trọng
 
----
+- Logger CSV append qua nhiều session; header chỉ ghi khi file đang rỗng hoặc khi người dùng chọn overwrite.
+- Nếu bật logging nhưng chưa có provider chạy, file CSV có thể chỉ chứa header.
+- Khi dừng app rồi chọn file CSV, buffer hiện tại được export ngay; nếu không có mẫu nào thì vẫn tạo file header-only.
 
-## Hiển thị đồ thị
+## Giới hạn hiện tại
 
-- [x] Hiển thị đủ **156 điểm mỗi chu kỳ** (không skip mẫu)
-- [ ] ~~2 đồ thị riêng biệt: **Điện áp (U1, U2, U3)** và **Dòng điện (I1, I2, I3)**~~ 
-=> Chỉ cần hiển thị điện áp.
-- [x] 3 pha hiển thị đan xen nhau dạng sóng sin =>> sóng sin hay không là do dữ liệu đầu vào
-- [x] Trục X: thời gian (s); với ASCII độ chính xác **millisecond**, với binary app tái dựng thời gian theo sample index ở 7800 Hz
-- [x] Trục Y điện áp: đơn vị **mV**, độ chính xác milivolt
-- [ ] ~~Trục Y dòng điện: đơn vị **mA**, độ chính xác milliamp~~ => loại bỏ 
-- [ ] ~~Hiển thị chấm tròn (scatter dots) trên điểm khi số điểm ít (dưới ngưỡng SCATTER_MAX)~~ =>> mỗi chu kì(20ms) là 156 mẫu, tương đương 156 điểm, khá là dày đặc 
-- [ ] 2 trục X đồng bộ nhau (X-link giữa 2 plot)
-- [x] Theme tối kiểu oscilloscope chuyên nghiệp
+- Release này chỉ hiển thị điện áp `U1/U2/U3`, không còn plot dòng điện.
+- Chỉ có một đồ thị điện áp, không còn kiến trúc hai plot như bản ý tưởng cũ.
+- Playback hiện nạp toàn bộ file vào bộ nhớ trước khi phát.
+- Chưa có bộ test release riêng đi kèm bundle hiện tại.
 
----
+## Gợi ý đóng gói release
 
-## Cửa sổ trượt (Sliding Window)
+Nếu phát hành nội bộ, tối thiểu nên kèm theo:
 
-- [x] Chỉ hiển thị dữ liệu trong **N giây gần nhất**
-- [x] N tùy chọn: `1, 3, 5, 10, 30, 60, 120` giây (dropdown)
-- [x] Dữ liệu cũ hơn N giây tự động loại bỏ khỏi bộ nhớ (rolling buffer)
-- [x] Buffer tối đa 120 giây (~27.000 mẫu × 1.5 = MAX_SAMPLES)
-=>> Lưu ý phần oldcode.py đã không làm tốt việc này
----
-
-## Crosshair & Tương tác chuột
-
-- [x] Đường crosshair (dấu thập) bám theo con trỏ trên cả 2 đồ thị
-- [x] Khi di chuột, hiển thị giá trị: `t=x.xxxs  U1=... U2=... U3= mV  I1=... mA`
-- [x] Đọc giá trị tại điểm gần nhất trên dữ liệu thực (snap to nearest sample)
-- [x] Crosshair đồng bộ giữa 2 plot (di chuột trên 1 plot thì cả 2 cập nhật X)
-=>> Lưu ý code oldcode.py cũng chưa hiển thị được giá trị mỗi điểm khi trỏ tới
----
-
-## Bảng điều khiển (Control Panel)
-
-- [x] **Mode selector**: Online (COM) | Simulation | Playback (log file)
-- [x] **Online mode**: chọn COM port, baudrate, nút refresh danh sách port
-- [x] **Simulation mode**: tuỳ chỉnh Freq (Hz), V_rms (mV), I_rms (mA), φ (°)
-- [x] **Playback mode**: chọn file log, tuỳ chỉnh tốc độ phát lại (Speed)
-- [x] Nút **▶ Start** / **■ Stop** / **❚❚ Freeze / ▶ Resume**
-- [x] **Gain U** (mV→mV) và **Gain I** (mA→mA) tuỳ chỉnh hệ số khuếch đại
-- [x] Toggle hiển thị từng kênh: **U1 U2 U3 I1 I2 I3** (checkbox)
-- [x] **Log to CSV**: checkbox bật/tắt, nút chọn đường dẫn file
-
----
-
-## Status Bar
-
-- [x] Trạng thái: Stopped / Running [mode] / Error
-- [x] Số dòng nhận / số frame: `lines: x | frames: x`
-- [x] **V_rms**: L1=... L2=... L3=... mV =>> lưu ý là hiển thị đúng giá trị nhận được từ uart, đơn vị là V nhưng giá trị đúng tới mV.
-- [ ] **I_rms**: L1=... L2=... L3=... mA
-- [x] Tần số lấy mẫu thực tế: `fs: x.x Hz`
-- [x] Tốc độ cập nhật giao diện: `fps: x`
-- [x] Cursor readout ở góc phải status bar (màu vàng, monospace)
-
----
-
-## Hiệu năng & Kiến trúc
-
-- [x] Không lag khi chạy liên tục (rolling buffer giới hạn bộ nhớ)
-- [x] Timer refresh ~33ms (~30 FPS)
-- [x] Dùng NumPy array cho render (không dùng list Python thuần)
-- [ ] Không vẽ scatter dots khi số điểm lớn (tắt symbol khi > SCATTER_MAX)
-- [x] Dùng `queue.Queue` tách biệt luồng đọc dữ liệu và luồng vẽ
-
----
-
-## Modules phụ trợ
-
-- [x] `providers.py`: `QualSerialProvider`, `QualSimulationProvider`, `QualFileProvider`, `list_serial_ports`
-- [x] `QualSerialProvider` tự nhận diện ASCII legacy và binary transport trên cùng COM port
-- [x] `logger.py`: `QualDataLogger` — ghi CSV bất đồng bộ qua queue riêng
+- `main.py`
+- `providers.py`
+- `logger.py`
+- `requirements.txt`
+- `Readme.md`
+- Môi trường Python hoặc hướng dẫn cài dependency ở trên

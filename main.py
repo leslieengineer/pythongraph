@@ -578,6 +578,9 @@ class QualMainWindow(QMainWindow):
             try:
                 self._prime_log_file()
             except Exception as exc:
+                self._chk_log.blockSignals(True)
+                self._chk_log.setChecked(False)
+                self._chk_log.blockSignals(False)
                 self._lbl_status.setText(f"LOG ERROR: {exc}")
                 self._btn_log_file.setStyleSheet("color:#FF4040; font-weight:bold")
                 self._btn_log_file.setText(Path(self._log_path).name)
@@ -674,9 +677,16 @@ class QualMainWindow(QMainWindow):
     def _on_window_changed(self, v):
         self._win_s = float(v)
         self._pw.setXRange(0.0, self._win_s, padding=0.0)
+        if self._buf.sample_count > 0:
+            t, u_v = self._buf.view(self._win_s)
+            self._latest_t = t
+            self._latest_u = u_v
+            self._render_plot(t, u_v)
 
     def _on_ugain_changed(self, v):
         self._u_gain = v
+        if len(self._latest_t) > 0:
+            self._update_y_zoom(self._latest_u)
 
     def _update_y_zoom(self, u_v):
         visible_data = [
@@ -696,6 +706,8 @@ class QualMainWindow(QMainWindow):
     def _on_channel_toggle(self):
         for curve, chk in zip(self._curves, self._chk_u):
             curve.setVisible(chk.isChecked())
+        if len(self._latest_t) > 0:
+            self._render_plot(self._latest_t, self._latest_u)
 
     def _drain_gui_queue(self):
         new_frames = 0
@@ -781,12 +793,15 @@ class QualMainWindow(QMainWindow):
             self._tick_ts = now
 
         if self._provider is not None and hasattr(self._provider, "lines_rx"):
+            drop_suffix = ""
+            if getattr(self._provider, "frames_dropped", 0):
+                drop_suffix = f" | dropped: {self._provider.frames_dropped}"
             if isinstance(self._provider, QualFileProvider):
                 self._lbl_diag.setText(
-                    f"playback: {Path(self._play_path).name} | loaded: {self._provider.loaded_frames} | replayed: {self._provider.frames_rx}")
+                    f"playback: {Path(self._play_path).name} | loaded: {self._provider.loaded_frames} | replayed: {self._provider.frames_rx}{drop_suffix}")
             else:
                 self._lbl_diag.setText(
-                    f"lines: {self._provider.lines_rx} | frames: {self._provider.frames_rx}")
+                    f"lines: {self._provider.lines_rx} | frames: {self._provider.frames_rx}{drop_suffix}")
         else:
             self._lbl_diag.setText(f"buf: {self._buf.sample_count}")
 
