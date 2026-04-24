@@ -46,6 +46,8 @@ REFRESH_MS  = 33           # ~30 FPS
 GUI_QUEUE_SECS = 1.0       # keep the GUI near real-time instead of building long delay
 GUI_QUEUE_MAX  = int(QUAL_FS_HZ * 50 * GUI_QUEUE_SECS)
 RENDER_SOFT_LIMIT = 20_000
+SAMPLE_DOT_RENDER_LIMIT = 4_000
+SAMPLE_DOT_SIZE = 4
 
 WINDOW_OPTS = ("0.02", "0.04", "0.10", "0.20", "0.50", "1", "3", "5", "10", "30", "60", "120")
 DEFAULT_WIN = "0.20"
@@ -380,6 +382,13 @@ class QualMainWindow(QMainWindow):
         self._chk_log.stateChanged.connect(self._on_log_toggle)
         opt_row.addWidget(self._chk_log)
 
+        self._chk_sample_dots = QCheckBox("Sample dots")
+        self._chk_sample_dots.setChecked(True)
+        self._chk_sample_dots.setToolTip(
+            "Show one dot per rendered sample when the visible point count is low enough")
+        self._chk_sample_dots.stateChanged.connect(self._on_plot_style_changed)
+        opt_row.addWidget(self._chk_sample_dots)
+
         self._btn_log_file = QPushButton(Path(self._log_path).name)
         self._btn_log_file.setToolTip(self._log_path)
         self._btn_log_file.clicked.connect(self._pick_log_file)
@@ -444,9 +453,11 @@ class QualMainWindow(QMainWindow):
         self._pw.setLabel("bottom", "Time", units="s")
         self._pw.addLegend(offset=(10, 10))
 
+        self._curve_pens = [pg.mkPen(col, width=1.5) for col in COLORS_V]
+        self._curve_brushes = [pg.mkBrush(col) for col in COLORS_V]
         self._curves = [
-            self._pw.plot([], [], name=lbl, pen=pg.mkPen(col, width=1.5))
-            for lbl, col in zip(PHASE_LABELS, COLORS_V)
+            self._pw.plot([], [], name=lbl, pen=pen)
+            for lbl, pen in zip(PHASE_LABELS, self._curve_pens)
         ]
         for curve in self._curves:
             curve.setClipToView(True)
@@ -708,6 +719,37 @@ class QualMainWindow(QMainWindow):
             return t, u_v
         return t[::stride], [d[::stride] for d in u_v]
 
+    def _should_show_sample_dots(self, t_render):
+        return self._chk_sample_dots.isChecked() and len(t_render) <= SAMPLE_DOT_RENDER_LIMIT
+
+    def _render_plot(self, t, u_v):
+        t_render, u_render = self._prepare_render_view(t, u_v)
+        if len(t) > 0:
+            show_sample_dots = self._should_show_sample_dots(t_render)
+            for k, curve in enumerate(self._curves):
+                if curve.isVisible():
+                    curve.setData(
+                        t_render,
+                        u_render[k],
+                        pen=self._curve_pens[k],
+                        symbol="o" if show_sample_dots else None,
+                        symbolSize=SAMPLE_DOT_SIZE if show_sample_dots else 0,
+                        symbolBrush=self._curve_brushes[k] if show_sample_dots else None,
+                        symbolPen=self._curve_pens[k] if show_sample_dots else None,
+                    )
+            self._update_y_zoom(u_v)
+            return _RollingBuffer.rms(u_v)
+        return [0.0, 0.0, 0.0]
+
+    def _on_plot_style_changed(self):
+        if len(self._latest_t) > 0:
+            self._render_plot(self._latest_t, self._latest_u)
+        elif self._buf.sample_count > 0:
+            t, u_v = self._buf.view(self._win_s)
+            self._latest_t = t
+            self._latest_u = u_v
+            self._render_plot(t, u_v)
+
     # ------------------------------------------------------------------ Timer tick
 
     def _on_tick(self):
@@ -719,16 +761,7 @@ class QualMainWindow(QMainWindow):
         t, u_v = self._buf.view(self._win_s)
         self._latest_t = t
         self._latest_u = u_v
-        t_render, u_render = self._prepare_render_view(t, u_v)
-
-        if len(t) > 0:
-            for k, curve in enumerate(self._curves):
-                if curve.isVisible():
-                    curve.setData(t_render, u_render[k])
-            self._update_y_zoom(u_v)
-            rms_u = _RollingBuffer.rms(u_v)
-        else:
-            rms_u = [0.0, 0.0, 0.0]
+        rms_u = self._render_plot(t, u_v)
 
         # ── Status bar updates ────────────────────────────────────────
         now = time.monotonic()
