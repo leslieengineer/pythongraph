@@ -51,9 +51,6 @@ SAMPLE_DOT_RENDER_LIMIT = 4_000
 SAMPLE_DOT_SIZE = 4
 HISTORY_SLIDER_STEPS = 2_000
  
-WINDOW_OPTS = ("128", "256", "640", "1280", "3200", "6400", "19200", "32000", "64000", "192000", "384000", "768000")
-DEFAULT_WIN = "1280"
- 
 COLORS_V      = ("#FF4040", "#40FF40", "#4080FF")
 PHASE_LABELS  = ("U1 (L1)", "U2 (L2)", "U3 (L3)")
 COMPOUND_CHANNELS = (
@@ -268,6 +265,11 @@ class QualMainWindow(QMainWindow):
         self._frozen        = False
         self._u_gain        = 1.0
         self._syncing_plot_x = False
+        
+        self._global_y_min_u = float('inf')
+        self._global_y_max_u = float('-inf')
+        self._global_y_min_u12 = float('inf')
+        self._global_y_max_u12 = float('-inf')
  
         self._fs_samples_last = 0
         self._fs_ts_last      = time.monotonic()
@@ -381,6 +383,7 @@ class QualMainWindow(QMainWindow):
         self._spin_spc = QSpinBox()
         self._spin_spc.setRange(10, 10000)
         self._spin_spc.setValue(312)
+        self._spin_spc.valueChanged.connect(self._update_window_samples)
         cfg_row.addWidget(self._spin_spc)
         
         cfg_row.addWidget(QLabel("Grid Freq (Hz):"))
@@ -494,17 +497,17 @@ class QualMainWindow(QMainWindow):
         # ── Options row ───────────────────────────────────────────────
         opt_row = QHBoxLayout()
  
-        opt_row.addWidget(QLabel("Window (samples):"))
+        opt_row.addWidget(QLabel("Window (cycles):"))
         self._spin_window = QSpinBox()
-        self._spin_window.setRange(10, 768000)
-        self._spin_window.setValue(1280)
-        self._spin_window.setFixedWidth(80)
-        self._spin_window.valueChanged.connect(self._on_window_changed)
+        self._spin_window.setRange(1, 5000)
+        self._spin_window.setValue(4)
+        self._spin_window.setFixedWidth(60)
+        self._spin_window.valueChanged.connect(self._update_window_samples)
         opt_row.addWidget(self._spin_window)
  
         self._sld_window = QSlider(Qt.Horizontal)
-        self._sld_window.setRange(10, 768000)
-        self._sld_window.setValue(1280)
+        self._sld_window.setRange(1, 500)
+        self._sld_window.setValue(4)
         self._sld_window.setMinimumWidth(100)
         self._sld_window.setMaximumWidth(200)
         
@@ -745,7 +748,7 @@ class QualMainWindow(QMainWindow):
  
         self._plot_area.addWidget(self._pw_u12, stretch=1)
  
-        self._win_s = float(self._spin_window.value())
+        self._win_s = float(self._spin_window.value() * self._spin_spc.value())
         self._pw.setXRange(0.0, self._win_s, padding=0.0)
         self._pw_u12.setXRange(0.0, self._win_s, padding=0.0)
         self._pw.plotItem.sigXRangeChanged.connect(self._on_main_x_range_changed)
@@ -921,6 +924,12 @@ class QualMainWindow(QMainWindow):
         self._btn_freeze.setText("❚❚ Freeze")
         self._btn_freeze.setStyleSheet("")
         self._lbl_cursor.setText("Cursor: —")
+        
+        self._global_y_min_u = float('inf')
+        self._global_y_max_u = float('-inf')
+        self._global_y_min_u12 = float('inf')
+        self._global_y_max_u12 = float('-inf')
+        
         self._update_history_controls()
  
         mode = self._cb_mode.currentIndex()
@@ -1093,10 +1102,14 @@ class QualMainWindow(QMainWindow):
             else:
                 self._show_live_view()
  
-    def _on_window_changed(self, v):
-        self._win_s = float(v)
+    def _update_window_samples(self, *_args):
+        cycles = self._spin_window.value()
+        spc = self._spin_spc.value()
+        self._win_s = float(cycles * spc)
+        
         self._pw.setXRange(0.0, self._win_s, padding=0.0)
         self._pw_u12.setXRange(0.0, self._win_s, padding=0.0)
+        
         if self._buf.sample_count > 0:
             if self._history_mode and self._history_target_t is not None:
                 self._show_history_view(self._history_target_t)
@@ -1135,8 +1148,17 @@ class QualMainWindow(QMainWindow):
  
         y_min = min(float(np.min(data)) for data in visible_data)
         y_max = max(float(np.max(data)) for data in visible_data)
-        center = 0.5 * (y_min + y_max)
-        half_range = max(y_max - center, center - y_min, 1.0)
+        
+        if y_min < self._global_y_min_u:
+            self._global_y_min_u = y_min
+        if y_max > self._global_y_max_u:
+            self._global_y_max_u = y_max
+            
+        if self._global_y_min_u == float('inf'):
+            return
+ 
+        center = 0.5 * (self._global_y_min_u + self._global_y_max_u)
+        half_range = max(self._global_y_max_u - center, center - self._global_y_min_u, 1.0)
         display_half_range = (half_range / max(self._u_gain, 1e-9)) * 1.05
         self._pw.setYRange(center - display_half_range, center + display_half_range, padding=0.0)
  
@@ -1158,8 +1180,17 @@ class QualMainWindow(QMainWindow):
  
         y_min = min(float(np.min(data)) for data in visible_compound_data)
         y_max = max(float(np.max(data)) for data in visible_compound_data)
-        center = 0.5 * (y_min + y_max)
-        half_range = max(y_max - center, center - y_min, 1.0)
+        
+        if y_min < self._global_y_min_u12:
+            self._global_y_min_u12 = y_min
+        if y_max > self._global_y_max_u12:
+            self._global_y_max_u12 = y_max
+            
+        if self._global_y_min_u12 == float('inf'):
+            return
+ 
+        center = 0.5 * (self._global_y_min_u12 + self._global_y_max_u12)
+        half_range = max(self._global_y_max_u12 - center, center - self._global_y_min_u12, 1.0)
         display_half_range = (half_range / max(self._u_gain, 1e-9)) * 1.05
         self._pw_u12.setYRange(center - display_half_range, center + display_half_range, padding=0.0)
  
