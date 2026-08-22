@@ -1,69 +1,73 @@
 # QUAL Waveform Viewer
 
-Ứng dụng desktop để hiển thị sóng điện áp QUAL `U1/U2/U3` theo thời gian thực từ UART, mô phỏng nội bộ, hoặc playback từ file log.
+A desktop application for real-time visualization of QUAL voltage waveforms (`U1/U2/U3` and compound voltages) via UART, internal simulation, or log file playback.
 
-Đây là bản release đã được rút gọn để chỉ giữ phần tính năng chính. Repo hiện không còn mã thử nghiệm, script validation cũ, hay kiến trúc hai đồ thị của bản ý tưởng trước đó.
+This is a streamlined release focusing on core visualization and scenario-building features. The repository no longer contains experimental code or old validation scripts.
 
-## Phạm vi release
+## Release Scope
 
-- Chỉ hiển thị 3 kênh điện áp `U1/U2/U3`.
-- Chỉ dùng một đồ thị điện áp duy nhất.
-- Có rolling buffer 120 giây để xem lại lịch sử gần.
-- Có logging CSV bất đồng bộ và export snapshot buffer.
-- Có chế độ xem lại lịch sử với `Go to (s)`, slider, và `Back to live`.
+- Displays 3 phase voltage channels (`U1/U2/U3`) and 3 compound voltage channels (`U12/U23/U31`).
+- Uses dual plots to separate phase and compound voltages.
+- Features a highly configurable rolling buffer for reviewing recent history.
+- Includes an integrated **Scenario Builder** to modify and manipulate log data (simulate voltage sags, harmonics, flicker, etc.) during playback.
+- Includes asynchronous CSV logging and buffer snapshot export using `index` tracking.
+- Provides a history review mode with `Go to (index)`, a scrub slider, and `Back to live`.
 
-## Tính năng chính
+## Key Features
 
-- Hiển thị real-time 3 pha điện áp trên một đồ thị duy nhất.
-- Hỗ trợ 3 mode:
-	- `Online (COM)` đọc từ UART.
-	- `Simulation` tạo sóng sin 3 pha nội bộ.
-	- `Playback (log)` phát lại từ file log đã lưu.
-- Tự nhận diện 2 kiểu dữ liệu ở Online:
-	- ASCII legacy: `$Q,<u32_sec>,<u16_ms>,<U1>,<U2>,<U3>[,<I1>,<I2>,<I3>]`
-	- Binary frame 10 byte với layout cố định: `sync + payload packed + checksum`.
-- Rolling buffer tối đa 120 giây, chỉ render cửa sổ đang xem thay vì toàn bộ dữ liệu.
-- Crosshair bám chuột, snap tới mẫu gần nhất, và hiển thị `t`, `U1`, `U2`, `U3` ở status bar.
-- Có baseline ngang cố định tại `U = 0` để dễ quan sát mức 0 V.
-- Có vạch dọc riêng cho mốc `Go to`, giúp biết ngay vị trí đang xem trong cửa sổ history.
-- Có tùy chọn `Sample dots` để hiện từng mẫu khi mật độ điểm còn thấp.
-- Tự tắt marker mẫu khi số điểm render quá lớn để giữ FPS.
-- Hiển thị `V_rms`, `fs`, `fps`, số frame/line, và số frame bị drop nếu GUI queue bị quá tải.
-- Ghi log CSV bất đồng bộ sang file.
+- Real-time display of voltages across dual interactive plots.
+- **Dynamic Units**: Automatically switches between `mV` and `ADC` based on the configured ADC Scale.
+- Supports 3 modes:
+	- `Online (COM)`: Reads from UART.
+	- `Simulation`: Generates an internal 3-phase sine wave.
+	- `Playback (log)`: Replays from a saved log file with custom playback speeds.
+- Auto-detects 2 data formats in Online mode:
+	- Legacy ASCII: `$Q,<u32_sec>,<u16_ms>,<U1>,<U2>,<U3>[,<I1>,<I2>,<I3>]`
+	- Binary frame with a dynamic layout: `sync + packed payload + checksum`.
+- **Integrated Scenario Builder**: Apply rules (Scale, Cut to 0, Add Harmonic, Add Flicker, Crop/Delete) to specific sample indexes and phases, and build new custom scenario CSV logs.
+- X-axis window is defined in `cycles` based on a configurable `Samples/Cycle` setting.
+- **Global Y-Zoom**: The Y-axis automatically scales up to fit data but does not automatically scale down, preventing erratic zooming. A manual Y-zoom multiplier is provided for inspection.
+- Mouse-tracking crosshair that snaps to the nearest sample, displaying `index`, `U1`, `U2`, `U3`, `U12`, `U23`, `U31` on the status bar.
+- Fixed horizontal baseline at `0` for easy observation.
+- Dedicated vertical marker for the `Go to` point, indicating the exact viewing position in the history window.
+- `Sample dots` option to display individual samples when data point density is low.
+- Automatically disables sample markers when the rendered point count is too high, preserving FPS.
+- Displays `RMS`, `fs`, `fps`, frame/line count, and dropped frames if the GUI queue is overloaded.
+- Asynchronous CSV logging to file.
 
-## Thành phần release
+## Release Components
 
-- `main.py`: giao diện PyQt5, rolling buffer, render, history review, status bar, entry point.
-- `providers.py`: Serial provider, Simulation provider, Playback provider, parse giao thức đầu vào.
-- `logger.py`: logger CSV nền và export snapshot buffer.
-- `requirements.txt`: dependency đã pin version cho bản release.
-- `Readme.md`: tài liệu phát hành và hướng dẫn chạy.
+- `main.py`: PyQt5 interface, system configuration, scenario builder, rolling buffer, rendering, history review, status bar, and application entry point.
+- `providers.py`: Serial provider, Simulation provider, Playback provider, and dynamic input protocol parsing.
+- `logger.py`: Background CSV logger and buffer snapshot exporter.
+- `requirements.txt`: Dependencies with pinned versions for this release.
+- `Readme.md`: Release documentation and execution instructions.
 
-## Yêu cầu môi trường
+## Environment Requirements
 
-- Hệ điều hành khuyến nghị: Windows 10 hoặc Windows 11.
-- Python khuyến nghị: **official CPython 3.12+ hoặc 3.13+**.
-- Bản release này đã được cài và smoke-test với **official CPython 3.13.5 on Windows**.
+- Recommended OS: Windows 10 or Windows 11.
+- Recommended Python: **official CPython 3.12+ or 3.13+**.
+- This release has been installed and smoke-tested with **official CPython 3.13.5 on Windows**.
 
-Lưu ý quan trọng:
+Important Notes:
 
-- Không nên dùng MSYS2 / MinGW Python để cài bằng `pip install -r requirements.txt`.
-- Lý do là wheel chuẩn của `numpy`, `PyQt5`, `pyqtgraph` trên Windows thường được build cho CPython Windows chuẩn, không phải tag MinGW/UCRT. Khi đó `pip` có thể rơi sang build source và fail.
+- Avoid using MSYS2 / MinGW Python to install via `pip install -r requirements.txt`.
+- Reason: Standard wheels for `numpy`, `PyQt5`, and `pyqtgraph` on Windows are typically built for standard CPython Windows, not the MinGW/UCRT tag. Using them might cause `pip` to fallback to building from source, which can fail.
 
-## Dependency đã test
+## Tested Dependencies
 
-Nội dung hiện tại của `requirements.txt` là các version đã được cài và smoke-test:
+The current contents of `requirements.txt` are versions that have been successfully installed and smoke-tested:
 
 - `numpy==2.4.4`
 - `PyQt5==5.15.11`
 - `pyqtgraph==0.14.0`
 - `pyserial==3.5`
 
-## Cài đặt và chạy trên Windows
+## Installation and Execution on Windows
 
-### Cách khuyến nghị: PowerShell + official CPython
+### Recommended Method: PowerShell + official CPython
 
-Mở PowerShell tại thư mục project và chạy:
+Open PowerShell in the project directory and run:
 
 ```powershell
 py -3.13 -m venv .venv
@@ -74,9 +78,9 @@ python -m pip install -r requirements.txt
 python main.py
 ```
 
-Nếu máy của bạn dùng CPython 3.12 thay vì 3.13, có thể thay `py -3.13` bằng `py -3.12`.
+If your machine uses CPython 3.12 instead of 3.13, replace `py -3.13` with `py -3.12`.
 
-### Nếu lệnh `py` không có sẵn
+### If the `py` command is unavailable
 
 ```powershell
 python -m venv .venv
@@ -87,7 +91,7 @@ python -m pip install -r requirements.txt
 python main.py
 ```
 
-### Chạy từ Command Prompt
+### Running from Command Prompt
 
 ```bat
 py -3.13 -m venv .venv
@@ -97,7 +101,7 @@ python -m pip install -r requirements.txt
 python main.py
 ```
 
-### Chạy mà không activate venv
+### Running without activating venv
 
 ```powershell
 py -3.13 -m venv .venv
@@ -106,418 +110,250 @@ py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe main.py
 ```
 
-## Quy trình chạy chương trình
+## Execution Workflow
 
-### Bước 1. Mở ứng dụng
+### Step 1. Open the application
 
-Sau khi cài dependency xong:
+After installing the dependencies:
 
 ```powershell
 python main.py
 ```
 
-Ứng dụng sẽ mở một cửa sổ PyQt5 với:
+The application will launch a PyQt5 window with:
 
-- Hàng `Connection` ở trên cùng.
-- Hàng `Options` cho cửa sổ hiển thị, zoom, logging, sample dots, và channel toggle.
-- Hàng `History` cho `Go to (s)`, slider scrub, và `Back to live`.
-- Một đồ thị điện áp chính.
-- Status bar ở dưới cùng.
+- A `Configuration` group for defining fundamental signal parameters.
+- A `Connection & Logging` group.
+- A `Scenario Builder (Playback Only)` group.
+- A `Display Settings` group containing window cycles, Y-zoom, and channel toggles.
+- Dual plots for Phase and Compound voltages.
+- A status bar at the bottom.
 
-### Bước 2. Chọn mode dữ liệu
+### Step 2. System Configuration
 
-Ứng dụng có 3 mode:
+Before starting, set up the **Configuration** parameters:
+
+- **Samples/Cycle**: Number of samples per electrical cycle (Default: `312`).
+- **Grid Freq (Hz)**: The power grid frequency (Default: `50.0`).
+- **ADC Scale (÷)**: Divider to convert raw ADC to actual voltage. Entering `1.0` will automatically configure the GUI to display Raw ADC values instead of `mV`.
+
+### Step 3. Select a Data Mode
+
+The application offers 3 modes:
 
 #### 1. Online (COM)
 
-- Chọn `Mode = Online (COM)`.
-- Chọn `Port` từ danh sách COM.
-- Nếu vừa cắm thiết bị, nhấn nút refresh `⟳` để cập nhật danh sách port.
-- Chọn `Baud`.
-- Baud mặc định của project là `960000`.
-- Nhấn `Start` để bắt đầu đọc dữ liệu.
+- Select `Mode = Online (COM)`.
+- Select a `Port` from the list (or manually type `Auto`).
+- If a device was just plugged in, click the refresh button `⟳`.
+- Select the `Baud` rate (or type `Auto`).
+- Click `Start` to begin reading data.
 
-Khi đang chạy Online:
+While running Online:
 
-- `Stop` sẽ dừng provider và dừng cập nhật live.
-- `Freeze` sẽ dừng cập nhật hình trên màn hình nhưng app vẫn tiếp tục hút dữ liệu vào rolling buffer.
+- `Stop` will halt the provider and pause live updates.
+- `Freeze` will pause screen rendering, but the app will continue to pull data into the background rolling buffer.
 
 #### 2. Simulation
 
-- Chọn `Mode = Simulation`.
-- Cấu hình `Freq (Hz)` nếu muốn thay đổi tần số nguồn giả lập.
-- Cấu hình `V_rms (mV)` để thay đổi biên độ điện áp RMS.
-- Cấu hình `φ (°)` nếu muốn dịch pha.
-- Nhấn `Start` để chạy nguồn dữ liệu giả lập.
+- Select `Mode = Simulation`.
+- Configure `V_rms (mV)` to change the RMS voltage amplitude.
+- Configure `φ (°)` to apply a phase shift.
+- Click `Start` to run the simulated data source based on your configured `Samples/Cycle`.
 
-Mode này phù hợp để kiểm tra UI, history review, marker, và logging mà không cần phần cứng thật.
+This mode is ideal for testing the UI, history review, markers, and logging without requiring actual hardware.
 
-#### 3. Playback (log)
+#### 3. Playback (log) & Scenario Builder
 
-- Chọn `Mode = Playback (log)`.
-- Nhấn nút `Log…` trong nhóm `Connection` để chọn file playback.
-- Điều chỉnh `Speed` nếu muốn tua nhanh/chậm.
-- Nhấn `Start` để phát lại theo timestamp trong file.
+- Select `Mode = Playback (log)`.
+- Click `Log…` in the `Connection` group to choose a source playback file.
+- **Scenario Builder**:
+	- Specify a `Start Index` and `End Index`.
+	- Select the target `Phase` (All, U1, U2, U1+U2, etc.).
+	- Choose an `Action` (Scale %, Cut to 0, Add Harmonic, Add Flicker, Crop/Delete).
+	- Provide `Value 1` and `Value 2` as required by the action.
+	- Click `+ Add Rule` to append to the rule list.
+	- Click `▶ Build & Load Scenario CSV` to generate a manipulated log file and automatically load it into playback.
+- Adjust the `Speed` to fast-forward or slow down playback.
+- Click `Start` to replay.
 
-Lưu ý:
+## Display Controls
 
-- Nút `Log…` trong phần `Connection` là để chọn **file playback**.
-- Nút đang hiển thị tên file CSV ở hàng `Options` là để chọn **file log đầu ra CSV**.
+- `Window (cycles)`: Number of electrical cycles displayed on the X-axis.
+- `Y zoom (x)`: A manual multiplier to scale the Y-axis visually. The plot expands automatically to fit larger data but relies on this zoom factor for inspecting smaller values. It does not modify original data.
+- `Show Phase` / `Compound Phase`: Toggle individual voltage traces on or off.
+- `Sample dots`: Toggle markers for individual sample points.
 
-## Điều khiển hiển thị
+Sample markers only appear when the number of rendered points is below an internal threshold. In long viewing windows, the app automatically reverts to line-only mode to prevent FPS drops.
 
-- `Window (s)`: độ dài cửa sổ hiển thị trên trục thời gian.
-- `Y zoom (x)`: chỉ thay đổi scale trục Y để quan sát; không làm thay đổi dữ liệu gốc.
-- `U1`, `U2`, `U3`: bật/tắt từng kênh điện áp.
-- `Sample dots`: bật/tắt marker từng mẫu.
+## Rolling Buffer History Review
 
-Marker mẫu chỉ hiện khi số điểm đang render không vượt ngưỡng nội bộ. Với cửa sổ ngắn, mỗi mẫu sẽ có chấm rõ ràng; với cửa sổ dài, ứng dụng tự quay về line-only để tránh tụt FPS.
+The `History` section operates on a rolling buffer derived from the configured maximum samples.
 
-## Xem lại lịch sử 120 giây gần nhất
+- `Go to (index)`: Enter the exact sample index you want to view.
+- `Go`: Jump to the entered index.
+- Horizontal slider: Drag to scrub through the history buffer.
+- `Back to live`: Return to tracking live data at the end of the buffer.
 
-Phần `History` hoạt động trên rolling buffer 120 giây gần nhất đang nằm trong RAM.
+Important rules:
 
-- `Go to (s)`: nhập mốc thời gian muốn xem.
-- `Go`: nhảy tới mốc thời gian đã nhập.
-- Slider ngang: kéo để scrub qua lịch sử trong buffer.
-- `Back to live`: quay về chế độ bám live ở cuối buffer.
+- While in history view, live data continues to flow into the rolling buffer.
+- The yellow vertical line represents the current `Go to` point.
+- The light blue horizontal baseline indicates the permanent `0` level.
+- The white crosshair indicates the current mouse position.
+- The cursor readout in the status bar displays `index`, `U1`, `U2`, `U3` and compound equivalents of the nearest sample being pointed at.
 
-Các quy tắc quan trọng:
+## CSV Logging
 
-- Khi đang ở history view, dữ liệu live vẫn tiếp tục được nạp vào rolling buffer.
-- Vạch dọc màu vàng là mốc `Go to` hiện tại trong cửa sổ đang xem.
-- Baseline ngang màu xanh nhạt là mức `U = 0` luôn luôn hiện.
-- Crosshair trắng là vị trí chuột hiện tại.
-- Cursor ở status bar vẫn hiển thị `t`, `U1`, `U2`, `U3` của mẫu gần nhất đang trỏ tới.
+- Tick `Log to CSV` to arm background logging (Automatically hidden during Playback mode).
+- Select the destination file using the button displaying the CSV filename.
+- If the app is stopped, selecting a CSV file will immediately export a snapshot of the current buffer.
+- If the app is running and logging is enabled, new data will be asynchronously logged to the CSV.
 
-Ý nghĩa thời gian của `Go to (s)` theo mode:
-
-- `Simulation`: thời gian bắt đầu từ `0` khi bấm `Start`.
-- `Online` với binary frame: thời gian được app tự dựng lại từ `sample_index`, cũng bắt đầu gần `0` ở đầu session.
-- `Online` với ASCII legacy: app dùng `u32_sec + u16_ms / 1000` từ dữ liệu vào.
-- `Playback`: app dùng timestamp đã nằm trong file log.
-
-Giới hạn của history review:
-
-- Chỉ xem lại được trong **120 giây gần nhất** còn nằm trong rolling buffer.
-- Nếu mốc cũ hơn phạm vi buffer, app sẽ chỉ còn dữ liệu mới hơn.
-
-## Logging CSV
-
-- Tick `Log to CSV` để arm logging.
-- Chọn file đích bằng nút hiển thị tên file CSV ở hàng `Options`.
-- Nếu app đang dừng, việc chọn file CSV sẽ export ngay snapshot buffer hiện có.
-- Nếu app đang chạy và logging đang bật, dữ liệu mới sẽ được ghi nền sang CSV.
-
-Format file CSV do app ghi:
+CSV format written by the app:
 
 ```text
-t_s,U1_mV,U2_mV,U3_mV
+index,fw_min,fw_sec,fw_ms,U1_mV,U2_mV,U3_mV,...
 ```
 
-Hành vi logging đã được giữ lại cho release:
+Logging behaviors retained for this release:
 
-- Logger append qua nhiều session.
-- Header chỉ ghi khi file đang rỗng hoặc khi người dùng chọn overwrite.
-- Nếu bật logging nhưng chưa có provider chạy, file CSV có thể chỉ chứa header.
-- Khi dừng app rồi chọn file CSV, nếu buffer rỗng thì vẫn tạo file header-only.
+- Logger appends across multiple sessions.
+- The header is written only when the file is empty or when the user explicitly chooses to overwrite.
+- If logging is enabled but no provider is running, the CSV file may only contain the header.
 
-## Dữ liệu đầu vào được hỗ trợ
+## Supported Input Data
 
-### Hợp đồng dữ liệu nội bộ của ứng dụng
+### Internal Application Data Contract
 
-Mọi nguồn dữ liệu trong app cuối cùng đều được chuẩn hóa về cùng một frame Python nội bộ:
+All data sources are normalized to an internal frame:
 
 ```python
 {"t_s": float, "u": [u1, u2, u3]}
 ```
 
-Quy ước của frame nội bộ:
+*(Note: `t_s` strictly maps to the sample index).*
 
-- `t_s`: timestamp tính bằng giây, tăng đơn điệu.
-- `u`: danh sách 3 giá trị kênh analog đang hiển thị, hiện UI đang đặt tên là `U1`, `U2`, `U3`.
-- Đơn vị hiện tại của `u1/u2/u3` là `mV`.
+- `t_s` (index): Monotonically increasing sample counter.
+- `u`: List of 3 analog channel values currently displayed.
 
-Điểm quan trọng để tái dùng cho sản phẩm khác:
+### Legacy ASCII
 
-- App không bắt buộc dữ liệu phải đến từ đồng hồ điện.
-- Điều app thực sự cần là provider phải parse nguồn vào thành đúng frame nội bộ ở trên.
-- Nếu thiết bị khác vẫn có 3 kênh analog và timestamp, bạn có thể:
-	- phát trực tiếp theo format ASCII `$Q,...`, hoặc
-	- phát theo binary 10 byte đúng layout hiện tại, hoặc
-	- sửa `providers.py` để parse giao thức riêng của thiết bị rồi trả về frame nội bộ `{"t_s": ..., "u": [...]}`.
+`$Q,<u32_sec>,<u16_ms>,<U1>,<U2>,<U3>[,<I1>,<I2>,<I3>]`
 
-Nói ngắn gọn: transport có thể thay đổi, nhưng contract đầu ra của parser vào GUI hiện tại là `t_s + 3 kênh u`.
+The current release only utilizes the first 3 voltage values.
 
-### ASCII legacy
+### Dynamic Binary Frame
 
-```text
-$Q,<u32_sec>,<u16_ms>,<U1>,<U2>,<U3>
-```
+The current parser interprets incoming binary packets based on the `Configuration` values provided on the UI.
 
-Release hiện tại chỉ dùng 3 giá trị điện áp đầu tiên.
+#### Protocol spec for firmware / hardware
 
-### Binary frame 10 byte
+If you need to integrate another device into the app using the existing binary parser, consider this the mandatory input packet specification.
 
-Đây là packet nhị phân cố định dài đúng `10 byte`. Parser hiện tại trong [providers.py](providers.py#L39) và [providers.py](providers.py#L99) hiểu packet này theo đúng layout dưới đây.
-
-#### Protocol spec cho firmware / hardware
-
-Nếu cần tích hợp một thiết bị khác vào app mà vẫn dùng nguyên parser binary hiện tại, hãy xem đây là đặc tả packet đầu vào bắt buộc.
-
-| Byte offset | Kích thước | Tên | Bắt buộc | Mô tả |
+| Byte offset | Size | Name | Required | Description |
 | --- | --- | --- | --- | --- |
-| `0` | `1 byte` | `sync` | Có | Phải đúng `0xA5` |
-| `1..8` | `8 byte` | `payload` | Có | Payload packed, đọc theo `little-endian` |
-| `9` | `1 byte` | `checksum` | Có | XOR của toàn bộ `payload[0]..payload[7]` |
+| `0` | `1 byte` | `sync` | Yes | Must exactly be `0xA5` |
+| `1..8` | `8 bytes` | `payload` | Yes | Packed payload, read as `little-endian` |
+| `9` | `1 byte` | `checksum` | Yes | XOR of the entire `payload[0]..payload[7]` |
 
-App chỉ nhận packet nếu đồng thời thỏa cả 3 điều kiện:
+The app only accepts the packet if all 3 conditions are met simultaneously:
 
-- byte đầu là `0xA5`
-- tổng chiều dài frame là đúng `10 byte`
-- checksum XOR của 8 byte payload khớp byte cuối
+- The first byte is `0xA5`
+- The total frame length is exactly `10 bytes`
+- The XOR checksum of the 8-byte payload matches the last byte
 
-Bit-field của `payload` 64-bit:
+#### Bit layout within the 64-bit payload
 
-| Bit | Độ rộng | Tên trường | Kiểu | Ý nghĩa |
-| --- | --- | --- | --- | --- |
-| `0..7` | `8 bit` | `sample_pos` | unsigned | Vị trí mẫu trong chu kỳ, hợp lệ `0..155` |
-| `8..25` | `18 bit` | `U1_raw` | signed | Kênh 1, signed-18 two's complement |
-| `26..43` | `18 bit` | `U2_raw` | signed | Kênh 2, signed-18 two's complement |
-| `44..61` | `18 bit` | `U3_raw` | signed | Kênh 3, signed-18 two's complement |
-| `62..63` | `2 bit` | `reserved` | unsigned | Chưa dùng; nên phát `0` để dễ tương thích |
+The exact bit mapping is highly dynamic and depends on the `Samples/Cycle` configuration in the UI. The parser automatically calculates the required bit-width for the index mask (e.g., 312 samples requires 9 bits, while 128 samples requires 8 bits).
 
-Quy tắc decode ở phía app:
+Assuming a standard configuration of **312 Samples/Cycle** (9-bit index mask):
 
-- `payload` được đọc bằng `int.from_bytes(packet[1:9], "little", signed=False)`
-- mỗi trường `U*_raw` được giải mã theo two's complement signed-18
-- giá trị thực đưa lên GUI là `U*_mV = signed18_value * 10.0`
-- nếu `sample_pos >= 156`, packet bị loại
-- nếu `delta sample_pos == 0` so với packet trước, packet bị xem là lặp và bị loại
+- `Bit 0..8`: Sample position within the cycle (0..311)
+- `Bit 9..26`: `U1_raw` (signed-18 two's complement)
+- `Bit 27..44`: `U2_raw` (signed-18 two's complement)
+- `Bit 45..62`: `U3_raw` (signed-18 two's complement)
+- `Bit 63`: Unused/Reserved
 
-Quy tắc dựng thời gian:
+Decoding rules on the app side:
 
-- App không lấy timestamp tuyệt đối từ packet binary
-- App tự dựng `t_s` từ `sample_pos` với giả định `156 sample/cycle` ở lưới `50 Hz`
-- tần số lấy mẫu logic hiện tại là `7800 Hz`
-- công thức nội bộ:
+- `payload` is read as an unsigned 64-bit integer.
+- The dynamic index bits are extracted first.
+- Each `U*_raw` field is decoded as a signed-18 two's complement value.
+- The value is shifted `<< 6` to restore 24-bit resolution, and then divided by the configured `ADC Scale`.
+- If the `sample_pos` exceeds the configured samples per cycle, the packet is discarded.
+- If `delta sample_pos == 0` compared to the previous packet, it is discarded as a duplicate.
 
-```text
-delta = (sample_pos - last_sample_pos) mod 156
-total_samples += delta
-t_s = total_samples / 7800.0
-```
+Time reconstruction rules:
 
-Điều này có nghĩa là một thiết bị khác không nhất thiết phải là công tơ điện, nhưng nếu muốn tương thích không cần sửa code thì nó phải tuân theo đúng các giả định sau:
+- The app does not extract absolute timestamps from binary packets.
+- The app reconstructs an internal continuous sample counter from the cyclic `sample_pos`.
 
-- phát đều 3 kênh analog
-- dùng signed-18 cho từng kênh
-- scale theo `10 mV/LSB`
-- dùng `sample_pos` chạy vòng `0..155`
-- duy trì thứ tự packet theo thời gian thực
+Checklist for the firmware transmission side:
 
-Checklist cho bên phát firmware:
+- Always transmit exactly `10 bytes/frame`.
+- Do not change the `sync` byte from `0xA5`.
+- Keep the `payload` in `little-endian`.
+- Ensure `sample_pos` does not exhibit excessive jitter across cycles.
+- Recalculate the XOR checksum after packing the payload.
 
-- luôn phát đủ `10 byte/frame`
-- không đổi `sync` khỏi `0xA5`
-- giữ `payload` ở `little-endian`
-- đặt `reserved` về `0`
-- bảo đảm `sample_pos` không nhảy sai chu kỳ quá mức
-- tính lại checksum XOR sau khi pack payload
+### Playback files
 
-Ví dụ pseudo-pack ở phía phát:
+The app supports playback from:
 
-```text
-payload = 0
-payload |= (sample_pos & 0xFF)
-payload |= ((U1_raw & 0x3FFFF) << 8)
-payload |= ((U2_raw & 0x3FFFF) << 26)
-payload |= ((U3_raw & 0x3FFFF) << 44)
-payload_bytes = payload.to_bytes(8, "little")
-checksum = payload_bytes[0] ^ payload_bytes[1] ^ ... ^ payload_bytes[7]
-packet = [0xA5] + payload_bytes + [checksum]
-```
-
-Trong đó:
-
-- `U*_raw` là giá trị signed-18 đã đổi sang biểu diễn two's complement 18 bit
-- nếu nguồn dữ liệu gốc không ở đơn vị `mV`, bên phát phải tự scale trước khi pack, hoặc parser trong app phải được sửa tương ứng
-
-#### 1. Cấu trúc tổng thể
-
-- Byte `0`: `sync`
-- Byte `1..8`: `payload` dài `8 byte`
-- Byte `9`: `checksum`
-
-Chi tiết từng phần:
-
-- `sync` phải bằng `0xA5`.
-- `payload` được đọc như một số nguyên unsigned 64-bit theo thứ tự `little-endian`.
-- `checksum` là phép XOR của toàn bộ `8 byte payload`, không bao gồm byte sync.
-
-Nếu một packet sai `sync`, sai `checksum`, hoặc không đủ `10 byte`, packet đó sẽ bị bỏ qua.
-
-#### 2. Bit layout bên trong payload 64-bit
-
-Sau khi lấy `payload = int.from_bytes(packet[1:9], byteorder="little", signed=False)`, các bit được giải nghĩa như sau:
-
-- Bit `0..7`: `sample_pos`
-- Bit `8..25`: `U1_raw`
-- Bit `26..43`: `U2_raw`
-- Bit `44..61`: `U3_raw`
-- Bit `62..63`: hiện chưa dùng, có thể xem là `reserved`
-
-Tức là packet đang mang:
-
-- `1 byte` vị trí mẫu trong chu kỳ
-- `3 x 18 bit` dữ liệu signed cho 3 kênh
-- `2 bit` dự phòng ở cuối payload
-
-#### 3. Ý nghĩa từng trường
-
-`sample_pos`
-
-- Là chỉ số mẫu trong một chu kỳ 50 Hz.
-- Giá trị hợp lệ: `0 .. 155`.
-- App hiện giả định có `156 sample / cycle`, nên tần số lấy mẫu logic là:
-
-```text
-fs = 156 * 50 = 7800 Hz
-```
-
-- Nếu `sample_pos >= 156`, packet bị coi là không hợp lệ.
-
-`U1_raw`, `U2_raw`, `U3_raw`
-
-- Mỗi giá trị rộng `18 bit`, có dấu.
-- Parser giải mã theo two's complement signed-18.
-- Sau đó nhân với scale `10 mV/LSB`.
-
-Công thức:
-
-```text
-U_channel_mV = decode_signed18(raw_18bit) * 10.0
-```
-
-Miền giá trị lý thuyết sau scale là xấp xỉ:
-
-- `-131072 * 10 = -1,310,720 mV`
-- `+131071 * 10 = +1,310,710 mV`
-
-#### 4. Cách ứng dụng dựng timestamp từ packet binary
-
-Packet binary hiện tại không mang timestamp tuyệt đối theo giây. Thay vào đó app tự dựng `t_s` từ `sample_pos`.
-
-Cách làm hiện tại:
-
-- Packet hợp lệ đầu tiên sẽ đặt `last_sample_pos = sample_pos` và `total_samples = 0`.
-- Từ packet kế tiếp, app tính:
-
-```text
-delta = (sample_pos - last_sample_pos) mod 156
-```
-
-- Nếu `delta == 0`, packet bị bỏ qua vì bị xem là mẫu lặp.
-- Nếu hợp lệ, app cộng `delta` vào `total_samples`.
-- Timestamp nội bộ được dựng bằng:
-
-```text
-t_s = total_samples / 7800.0
-```
-
-Hệ quả:
-
-- `t_s` của binary mode bắt đầu gần `0` ở đầu session.
-- `t_s` là thời gian tương đối, không phải wall-clock time.
-- App giả định dòng packet đi theo đúng thứ tự thời gian và `sample_pos` quay vòng từ `155` về `0`.
-
-#### 5. Ví dụ contract mà thiết bị phát phải đáp ứng
-
-Nếu muốn một sản phẩm khác dùng lại parser binary hiện tại mà không sửa code, thiết bị đó phải phát packet thỏa các điều kiện sau:
-
-- Mỗi frame dài đúng `10 byte`.
-- Byte đầu luôn là `0xA5`.
-- `payload` 8 byte dùng `little-endian`.
-- Ba kênh dữ liệu được đóng gói đúng vị trí bit `8..25`, `26..43`, `44..61`.
-- Mỗi kênh dùng signed-18 two's complement.
-- Scale đúng `10 mV/LSB`.
-- `sample_pos` chạy trong miền `0..155` và tiến đều theo chu kỳ.
-- Byte cuối là XOR của `payload[0]..payload[7]`.
-
-Nếu thiết bị khác không đáp ứng đúng contract này, có hai lựa chọn thực tế:
-
-- Giữ nguyên GUI và chỉ sửa parser trong `providers.py` để map giao thức mới về frame nội bộ `{"t_s": float, "u": [u1, u2, u3]}`.
-- Hoặc sửa cả parser lẫn UI nếu số kênh, đơn vị, hoặc logic timestamp không còn là mô hình 3 kênh hiện tại.
-
-```text
-Byte 0 : 0xA5
-Byte 1..8 : payload 64-bit little-endian
-	- bit 0..7   : sample_index (0..155)
-	- bit 8..25  : U1 signed 18-bit, 10 mV/LSB
-	- bit 26..43 : U2 signed 18-bit, 10 mV/LSB
-	- bit 44..61 : U3 signed 18-bit, 10 mV/LSB
-Byte 9 : XOR checksum của bytes 1..8
-```
-
-### Playback file
-
-App hỗ trợ playback từ:
-
-- Dòng ASCII legacy bắt đầu bằng `$Q,`
-- Hoặc CSV đã được app export với header `t_s,U1_mV,U2_mV,U3_mV`
+- Legacy ASCII lines starting with `$Q,`
+- CSV files exported by the app with the `index` header.
 
 ## Troubleshooting
 
-### 1. `pip install -r requirements.txt` bị lỗi khi dùng Python của MSYS2 / MinGW
+### 1. `pip install -r requirements.txt` fails when using MSYS2 / MinGW Python
 
-Nguyên nhân thường là wheel của `numpy` hoặc `PyQt5` không khớp tag interpreter.
+The cause is usually that the `numpy` or `PyQt5` wheel does not match the interpreter tag.
 
-Cách xử lý đúng:
+Correct solution:
 
-- Cài official CPython for Windows.
-- Tạo venv mới bằng official CPython.
-- Cài lại bằng `pip install -r requirements.txt`.
+- Install the official CPython for Windows.
+- Create a new venv using official CPython.
+- Reinstall using `pip install -r requirements.txt`.
 
-### 2. Không thấy COM port
+### 2. COM port not visible
 
-- Kiểm tra thiết bị đã được Windows nhận diện hay chưa.
-- Nhấn nút refresh `⟳`.
-- Đảm bảo driver serial đã cài đúng.
+- Check if the device is recognized by Windows.
+- Click the refresh button `⟳`.
+- Ensure the serial driver is correctly installed.
 
-### 3. Playback báo không có frame hợp lệ
+### 3. Playback reports no valid frames
 
-Kiểm tra file playback có phải một trong hai dạng sau không:
+Check if the playback file matches one of these two formats:
 
-- Dòng `$Q,...`
-- CSV header `t_s,U1_mV,U2_mV,U3_mV`
+- Lines starting with `$Q,...`
+- CSV with header `index,fw_min,fw_sec,...`
 
-### 4. Status bar báo có `dropped`
+### 4. Status bar indicates 'dropped'
 
-Điều này nghĩa là GUI queue đã bị đầy trong lúc nhận dữ liệu. App vẫn chạy, nhưng có frame bị bỏ bớt để giữ ứng dụng gần real-time.
+This means the GUI queue became full while receiving data. The app continues to run, but some frames were discarded to keep the application near real-time.
 
-## Giới hạn hiện tại
+## Current Limitations
 
-- Release này chỉ hiển thị điện áp `U1/U2/U3`, không còn plot dòng điện.
-- Chỉ có một đồ thị điện áp, không còn kiến trúc hai plot như bản ý tưởng cũ.
-- Playback hiện nạp toàn bộ file vào bộ nhớ trước khi phát.
-- Không còn bộ test release đầy đủ trong repo; validation hiện tại dựa trên smoke test và kiểm tra tĩnh.
+- Playback currently loads the entire file into memory before replaying.
+- A full release test suite is no longer included in the repo; current validation relies on smoke tests and static analysis.
 
-## Kết quả audit cho release này
+## Audit Results for this Release
 
-Các điểm đã được rà và chốt cho bản phát hành hiện tại:
+Points reviewed and finalized for the current release:
 
-- `requirements.txt` đã pin version để đảm bảo reproducible install.
-- Đã thêm `.gitignore` để chặn `__pycache__`, `*.pyc`, và local venv.
-- Đã smoke-test các tính năng history review theo kiểu headless:
-	- nhập `Go to (s)`
-	- scrub slider
-	- cursor readout trong history
-	- vạch dọc marker cho mốc `Go to`
-	- baseline ngang tại `U = 0`
+- `requirements.txt` has pinned versions to ensure reproducible installations.
+- Added `.gitignore` to block `__pycache__`, `*.pyc`, and local venvs.
+- Smoke-tested history review and scenario builder features:
+	- Input `Go to (index)`
+	- Scrub slider
+	- Cursor readout in history mode
+	- Vertical marker line for the `Go to` point
+	- Horizontal baseline at `0`
 
-## Gợi ý đóng gói release
+## Release Packaging Suggestions
 
-Nếu phát hành nội bộ, tối thiểu nên kèm theo:
+For internal release, minimally include:
 
 - `main.py`
 - `providers.py`
@@ -525,62 +361,62 @@ Nếu phát hành nội bộ, tối thiểu nên kèm theo:
 - `requirements.txt`
 - `Readme.md`
 
-Không nên đóng gói kèm:
+Do not package:
 
 - `__pycache__`
-- local virtual environment (`.venv`, `.venv-cpython`)
-- log CSV sinh trong quá trình test thủ công
+- local virtual environments (`.venv`, `.venv-cpython`)
+- CSV logs generated during manual testing
 
-## Đóng gói thành simulation.exe
+## Packaging as simulation.exe
 
-Có thể đóng gói app này thành một file `simulation.exe` để mang sang máy Windows khác và chạy mà không cần cài Python riêng trên máy đích.
+This app can be packaged into a single `simulation.exe` file to run on other Windows machines without requiring a separate Python installation on the target machine.
 
-Điểm cần nói rõ:
+Clarifications:
 
-- Điều này thực tế nghĩa là `Windows build -> chạy trên Windows khác`.
-- Không có nghĩa là cùng một `simulation.exe` sẽ chạy trên macOS hoặc Linux.
-- Bản build nên được tạo trên máy có cùng kiến trúc với máy đích, hiện tại là `Windows x64`.
+- This practically means `Windows build -> runs on other Windows machines`.
+- It does not mean the same `simulation.exe` will run on macOS or Linux.
+- The build should be generated on a machine with the same architecture as the target machine, currently `Windows x64`.
 
-Repo hiện đã có sẵn cấu hình build:
+The repository currently provides build configurations:
 
-- `simulation.spec`: cấu hình PyInstaller.
-- `build_simulation.ps1`: script PowerShell để rebuild file exe.
+- `simulation.spec`: PyInstaller configuration.
+- `build_simulation.ps1`: PowerShell script to rebuild the executable.
 
-### Cách build
+### Build Instructions
 
-Từ thư mục project, dùng PowerShell:
+From the project directory, using PowerShell:
 
 ```powershell
 .\build_simulation.ps1
 ```
 
-Script này sẽ dùng đúng interpreter đã test là `.venv-cpython\Scripts\python.exe` và gọi PyInstaller bằng file `simulation.spec`.
+This script will use the tested interpreter `.venv-cpython\Scripts\python.exe` and invoke PyInstaller using the `simulation.spec` file.
 
-Nếu muốn chạy lệnh tay thay vì script:
+If you prefer running manual commands instead of the script:
 
 ```powershell
 .\.venv-cpython\Scripts\python.exe -m PyInstaller --noconfirm --clean simulation.spec
 ```
 
-### Kết quả build
+### Build Output
 
-Sau khi build xong, file chạy sẽ nằm tại:
+After building, the executable will be located at:
 
 ```text
 dist\simulation.exe
 ```
 
-Trên máy hiện tại, bản one-file đã build thành công với kích thước khoảng `49.65 MB`.
+On the current machine, the one-file build was successful with a size of approximately `49.65 MB`.
 
-### Cách phát hành sang máy khác
+### Distributing to other machines
 
-- Chép file `dist\simulation.exe` sang máy Windows đích.
-- Chạy trực tiếp file exe đó.
-- Máy đích không cần cài Python hay `pip install -r requirements.txt` nữa.
+- Copy the `dist\simulation.exe` file to the target Windows machine.
+- Run the executable directly.
+- The target machine no longer needs Python installed or `pip install -r requirements.txt` executed.
 
-### Lưu ý thực tế khi phát hành exe
+### Practical Notes for Executable Distribution
 
-- Lần chạy đầu có thể khởi động chậm hơn vì đây là bản `one-file`.
-- Windows SmartScreen hoặc antivirus có thể hiện cảnh báo vì file exe là bản tự đóng gói nội bộ, chưa ký số.
-- Nếu bên nhận dùng Windows khác kiến trúc hoặc chính sách bảo mật chặt hơn, nên test trước trên đúng môi trường đích.
-- Có warning liên quan `OpenGL` trong lúc build; điều này không chặn app hiện tại vì release này không dùng `pyqtgraph.opengl`.
+- The initial startup might be slower because it is a `one-file` build.
+- Windows SmartScreen or antivirus software might show warnings since the executable is self-packaged internally and lacks a digital signature.
+- If the recipient uses Windows with a different architecture or stricter security policies, it should be tested beforehand in the exact target environment.
+- There is a warning related to `OpenGL` during the build; this does not block the current app because this release does not use `pyqtgraph.opengl`.

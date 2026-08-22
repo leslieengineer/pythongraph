@@ -468,7 +468,7 @@ class QualFileProvider(_BaseProvider):
         for frame in frames:
             if self._stop.is_set():
                 break
-            # Tính thời gian chờ dựa trên config động
+            # Compute dynamic wait time
             t_file_offset = (frame["t_s"] - t_file_start) / (spc * freq)
             t_wall_target = t_wall_start + t_file_offset / self._speed
             wait = t_wall_target - time.monotonic()

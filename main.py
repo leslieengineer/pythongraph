@@ -1,7 +1,7 @@
 """
 QUAL Waveform Viewer
 ====================
-Real-time oscilloscope for Sagemcom AMR QUAL voltage samples via serial UART.
+Real-time oscilloscope for AMR QUAL voltage samples via serial UART.
  
 Modes:  Online (COM) | Simulation | Playback (log)
 UART:   USART1 (UART_SP for qual-mtr-test) at 2000000 baud
@@ -248,7 +248,7 @@ class QualMainWindow(QMainWindow):
  
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("QUAL Waveform Viewer  —  Sagemcom AMR")
+        self.setWindowTitle("QUAL Waveform Viewer  — AMR")
  
         self._gui_q   = queue.Queue(maxsize=GUI_QUEUE_MAX)
         self._log_q   = queue.Queue()
@@ -396,7 +396,7 @@ class QualMainWindow(QMainWindow):
         self._spin_adc_scale.setRange(0.0001, 1e9)
         self._spin_adc_scale.setDecimals(4)
         self._spin_adc_scale.setValue(1.0)
-        self._spin_adc_scale.setToolTip("Nhập 1 để xem Raw ADC. Nhập tỷ lệ chia để xem U_rms")
+        self._spin_adc_scale.setToolTip("Enter 1 for Raw ADC. Enter scale ratio for U_rms")
         self._spin_adc_scale.valueChanged.connect(self._update_plot_labels) # Trigger unit change
         cfg_row.addWidget(self._spin_adc_scale)
         
@@ -494,7 +494,7 @@ class QualMainWindow(QMainWindow):
         conn_row.addWidget(self._btn_start)
         conn_vbox.addLayout(conn_row)
         
-        # Logging Row (ẩn khi ở Playback)
+        # Logging Row (hidden in Playback mode)
         log_row = QHBoxLayout()
         self._chk_log = QCheckBox("Log to CSV")
         self._chk_log.stateChanged.connect(self._on_log_toggle)
@@ -521,22 +521,22 @@ class QualMainWindow(QMainWindow):
         scenario_vbox = QVBoxLayout(self._grp_scenario)
         
         sc_row1 = QHBoxLayout()
-        sc_row1.addWidget(QLabel("Từ Index:"))
+        sc_row1.addWidget(QLabel("Start Index:"))
         self._spin_sc_start = QSpinBox()
         self._spin_sc_start.setRange(0, 999999999)
         sc_row1.addWidget(self._spin_sc_start)
         
-        sc_row1.addWidget(QLabel("Đến Index:"))
+        sc_row1.addWidget(QLabel("End Index:"))
         self._spin_sc_end = QSpinBox()
         self._spin_sc_end.setRange(0, 999999999)
         sc_row1.addWidget(self._spin_sc_end)
         
-        sc_row1.addWidget(QLabel("Pha:"))
+        sc_row1.addWidget(QLabel("Phase:"))
         self._cb_sc_phase = QComboBox()
         self._cb_sc_phase.addItems(["All", "U1", "U2", "U3", "U1+U2", "U2+U3", "U3+U1"])
         sc_row1.addWidget(self._cb_sc_phase)
         
-        sc_row1.addWidget(QLabel("Hành động:"))
+        sc_row1.addWidget(QLabel("Action:"))
         self._cb_sc_action = QComboBox()
         self._cb_sc_action.addItems(["Scale (%)", "Cut to 0", "Add Harmonic", "Add Flicker", "Crop/Delete"])
         self._cb_sc_action.currentTextChanged.connect(self._on_sc_action_changed)
@@ -611,7 +611,7 @@ class QualMainWindow(QMainWindow):
         self._spin_ugain.setValue(1.0)
         self._spin_ugain.setDecimals(6)
         self._spin_ugain.setFixedWidth(110)
-        self._spin_ugain.setToolTip("Chi anh huong do phong dai truc Y de quan sat, khong doi gia tri do that")
+        self._spin_ugain.setToolTip("Only affects Y-axis visual magnification, does not alter actual data")
         self._spin_ugain.valueChanged.connect(self._on_ugain_changed)
         disp_row1.addWidget(self._spin_ugain)
         
@@ -869,7 +869,7 @@ class QualMainWindow(QMainWindow):
         for w in (self._btn_pick_file, self._lbl_speed, self._spin_speed):
             w.setVisible(play)
             
-        # Ẩn nút Log to CSV đi khi đang ở mode Playback
+        # Hide logging row when in Playback mode
         for w in (self._chk_log, self._btn_log_file, self._btn_open_log_folder):
             w.setVisible(not play)
 
@@ -881,7 +881,7 @@ class QualMainWindow(QMainWindow):
             v1_show = True; lbl_v1 = "Amp (%):"
         elif action == "Add Harmonic":
             v1_show = v2_show = True
-            lbl_v1 = "Amp (%):"; lbl_v2 = "Bậc (Order):"
+            lbl_v1 = "Amp (%):"; lbl_v2 = "Order:"
         elif action == "Add Flicker":
             v1_show = v2_show = True
             lbl_v1 = "Amp (%):"; lbl_v2 = "Freq (Hz):"
@@ -898,7 +898,7 @@ class QualMainWindow(QMainWindow):
         start = self._spin_sc_start.value()
         end = self._spin_sc_end.value()
         if start >= end:
-            QMessageBox.warning(self, "Lỗi", "Start Index phải nhỏ hơn End Index!")
+            QMessageBox.warning(self, "Error", "Start Index must be less than End Index!")
             return
             
         action = self._cb_sc_action.currentText()
@@ -906,7 +906,7 @@ class QualMainWindow(QMainWindow):
         v2 = self._spin_sc_v2.value()
         phase = self._cb_sc_phase.currentText()
         
-        # Crop/Delete bắt buộc phải áp dụng cho tất cả các pha để giữ đồng bộ thời gian
+        # Crop/Delete must apply to all phases to maintain time synchronization
         if action == "Crop/Delete" and phase != "All":
             phase = "All"
         
@@ -927,11 +927,11 @@ class QualMainWindow(QMainWindow):
         
     def _build_scenario(self):
         if not self._play_path or not Path(self._play_path).exists():
-            QMessageBox.warning(self, "Lỗi", "Vui lòng chọn một file log gốc trước khi Build!")
+            QMessageBox.warning(self, "Error", "Please select a source log file before building!")
             return
         
         if not self._scenario_rules:
-            QMessageBox.warning(self, "Lỗi", "Chưa có quy tắc (Rule) nào được thêm!")
+            QMessageBox.warning(self, "Error", "No rules have been added!")
             return
             
         try:
@@ -1020,10 +1020,10 @@ class QualMainWindow(QMainWindow):
                 )
                 self._play_path = save_path
                 self._btn_pick_file.setText(Path(self._play_path).name)
-                QMessageBox.information(self, "Thành công", f"Đã build và nạp kịch bản:\n{save_path}")
+                QMessageBox.information(self, "Success", f"Scenario built and loaded:\n{save_path}")
                 
         except Exception as e:
-            QMessageBox.critical(self, "Lỗi Build", str(e))
+            QMessageBox.critical(self, "Build Error", str(e))
  
     def _refresh_ports(self):
         current = self._cb_port.currentText()
@@ -1194,7 +1194,7 @@ class QualMainWindow(QMainWindow):
             if port.lower() == "auto" or not port:
                 ports = list_serial_ports()
                 if not ports:
-                    self._lbl_status.setText("Chưa tìm thấy cổng COM nào cho Auto")
+                    self._lbl_status.setText("No COM port found for Auto")
                     self._btn_start.blockSignals(True)
                     self._btn_start.setChecked(False)
                     self._btn_start.blockSignals(False)
@@ -1212,7 +1212,7 @@ class QualMainWindow(QMainWindow):
                     baud = int(baud_str)
                     self._autobaud_scanning = False
                 except ValueError:
-                    self._lbl_status.setText("Lỗi: Baudrate nhập tay không hợp lệ")
+                    self._lbl_status.setText("Error: Invalid manual baud rate")
                     self._btn_start.blockSignals(True)
                     self._btn_start.setChecked(False)
                     self._btn_start.blockSignals(False)
