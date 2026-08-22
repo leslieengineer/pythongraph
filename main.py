@@ -17,6 +17,7 @@ from __future__ import annotations
 import queue
 import sys
 import time
+import csv
 from pathlib import Path
  
 import numpy as np
@@ -26,7 +27,8 @@ from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QSpinBox,
     QFileDialog, QGroupBox, QHBoxLayout, QLabel, QMainWindow,
-    QPushButton, QSizePolicy, QSlider, QVBoxLayout, QWidget,
+    QPushButton, QSizePolicy, QSlider, QVBoxLayout, QWidget, QMessageBox,
+    QListWidget
 )
  
 from logger import QualDataLogger, export_csv_snapshot, prepare_csv_log
@@ -96,10 +98,6 @@ class _RollingBuffer:
             self._size += 1
  
     def view(self, window_s: float):
-        """Return (t_rel, [u1, u2, u3]) covering the last *window_s* samples.
-        t_rel is relative: 0 = start of window, window_s = now.
-        Uses only as many samples as needed — no full-buffer scan.
-        """
         if self._size == 0:
             empty = np.empty(0, dtype=np.float64)
             return empty, [empty, empty, empty]
@@ -163,7 +161,6 @@ class _RollingBuffer:
         return t_all, u_all
  
     def all_fw_data(self):
-        """Return (fw_min, fw_sec, fw_ms) arrays in same order as all_data()."""
         empty_i = np.empty(0, dtype=np.int16)
         if self._size == 0:
             return empty_i, empty_i, empty_i
@@ -298,10 +295,11 @@ class QualMainWindow(QMainWindow):
             np.empty(0, dtype=np.float32),
             np.empty(0, dtype=np.float32),
         ]
+        self._scenario_rules = []
  
         self._build_ui()
         self._build_plot()
-        self.resize(1280, 760)
+        self.resize(1280, 800)
  
         self._timer = QTimer(self)
         self._timer.setInterval(REFRESH_MS)
@@ -418,7 +416,7 @@ class QualMainWindow(QMainWindow):
         conn_row.addWidget(self._lbl_port)
         self._cb_port = QComboBox()
         self._cb_port.setMinimumWidth(90)
-        self._cb_port.setEditable(True)  # Cho phép nhập tay
+        self._cb_port.setEditable(True)
         conn_row.addWidget(self._cb_port)
  
         self._btn_refresh = QPushButton("⟳")
@@ -429,7 +427,7 @@ class QualMainWindow(QMainWindow):
         self._lbl_baud = QLabel("Baud:")
         conn_row.addWidget(self._lbl_baud)
         self._cb_baud = QComboBox()
-        self._cb_baud.setEditable(True)  # Cho phép nhập tay
+        self._cb_baud.setEditable(True)
         self._cb_baud.addItem("Auto")
         for b in ("9600", "19200", "38400", "57600", "115200",
                   "230400", "460800", "921600", "960000", "2000000", "4000000"):
@@ -493,6 +491,73 @@ class QualMainWindow(QMainWindow):
         conn_row.addWidget(self._btn_start)
  
         root.addWidget(conn_grp)
+        
+        # ── Scenario Builder group ──────────────────────────────────────
+        self._grp_scenario = QGroupBox("Scenario Builder (Playback Only)")
+        scenario_vbox = QVBoxLayout(self._grp_scenario)
+        
+        sc_row1 = QHBoxLayout()
+        sc_row1.addWidget(QLabel("Từ Index:"))
+        self._spin_sc_start = QSpinBox()
+        self._spin_sc_start.setRange(0, 999999999)
+        sc_row1.addWidget(self._spin_sc_start)
+        
+        sc_row1.addWidget(QLabel("Đến Index:"))
+        self._spin_sc_end = QSpinBox()
+        self._spin_sc_end.setRange(0, 999999999)
+        sc_row1.addWidget(self._spin_sc_end)
+        
+        sc_row1.addWidget(QLabel("Pha:"))
+        self._cb_sc_phase = QComboBox()
+        self._cb_sc_phase.addItems(["All", "U1", "U2", "U3", "U1+U2", "U2+U3", "U3+U1"])
+        sc_row1.addWidget(self._cb_sc_phase)
+        
+        sc_row1.addWidget(QLabel("Hành động:"))
+        self._cb_sc_action = QComboBox()
+        self._cb_sc_action.addItems(["Scale (%)", "Cut to 0", "Add Harmonic", "Add Flicker", "Crop/Delete"])
+        self._cb_sc_action.currentTextChanged.connect(self._on_sc_action_changed)
+        sc_row1.addWidget(self._cb_sc_action)
+        
+        self._lbl_sc_v1 = QLabel("Value 1:")
+        sc_row1.addWidget(self._lbl_sc_v1)
+        self._spin_sc_v1 = QDoubleSpinBox()
+        self._spin_sc_v1.setRange(-1000.0, 1000.0)
+        sc_row1.addWidget(self._spin_sc_v1)
+        
+        self._lbl_sc_v2 = QLabel("Value 2:")
+        sc_row1.addWidget(self._lbl_sc_v2)
+        self._spin_sc_v2 = QDoubleSpinBox()
+        self._spin_sc_v2.setRange(0.0, 1000.0)
+        sc_row1.addWidget(self._spin_sc_v2)
+        
+        sc_row1.addStretch(1)
+        
+        btn_sc_add = QPushButton("➕ Add Rule")
+        btn_sc_add.clicked.connect(self._add_scenario_rule)
+        sc_row1.addWidget(btn_sc_add)
+        
+        scenario_vbox.addLayout(sc_row1)
+        
+        sc_row2 = QHBoxLayout()
+        self._list_sc_rules = QListWidget()
+        self._list_sc_rules.setMaximumHeight(80)
+        sc_row2.addWidget(self._list_sc_rules)
+        
+        sc_col_btns = QVBoxLayout()
+        btn_sc_clear = QPushButton("🗑 Clear Rules")
+        btn_sc_clear.clicked.connect(self._clear_scenario_rules)
+        sc_col_btns.addWidget(btn_sc_clear)
+        
+        btn_sc_build = QPushButton("▶ Build & Load Scenario CSV")
+        btn_sc_build.setStyleSheet("background:#7A5A00; color:#FFD866; font-weight:bold")
+        btn_sc_build.clicked.connect(self._build_scenario)
+        sc_col_btns.addWidget(btn_sc_build)
+        
+        sc_row2.addLayout(sc_col_btns)
+        scenario_vbox.addLayout(sc_row2)
+        
+        root.addWidget(self._grp_scenario)
+        self._on_sc_action_changed(self._cb_sc_action.currentText())
  
         # ── Options row ───────────────────────────────────────────────
         opt_row = QHBoxLayout()
@@ -573,7 +638,7 @@ class QualMainWindow(QMainWindow):
         hist_row.addWidget(QLabel("Go to (index):"))
  
         self._spin_history = QDoubleSpinBox()
-        self._spin_history.setRange(0.0, 1.0) # Sẽ cập nhật động khi ấn Start
+        self._spin_history.setRange(0.0, 1.0)
         self._spin_history.setDecimals(0)
         self._spin_history.setSingleStep(100.0)
         self._spin_history.setKeyboardTracking(False)
@@ -675,7 +740,6 @@ class QualMainWindow(QMainWindow):
             curve.setClipToView(True)
             curve.setDownsampling(auto=True, method="peak")
  
-        # Crosshair lines
         _cp = pg.mkPen(color="#FFFFFF90", width=1, style=Qt.DashLine)
         self._vline = pg.InfiniteLine(angle=90, movable=False, pen=_cp)
         self._hline = pg.InfiniteLine(angle=0,  movable=False, pen=_cp)
@@ -693,7 +757,6 @@ class QualMainWindow(QMainWindow):
         self._history_vline.setVisible(False)
         self._pw.addItem(self._history_vline, ignoreBounds=True)
  
-        # Mouse proxy (throttled 60 Hz)
         self._mouse_proxy = pg.SignalProxy(
             self._pw.scene().sigMouseMoved,
             rateLimit=60,
@@ -754,12 +817,15 @@ class QualMainWindow(QMainWindow):
         self._pw.plotItem.sigXRangeChanged.connect(self._on_main_x_range_changed)
         self._pw_u12.plotItem.sigXRangeChanged.connect(self._on_compound_x_range_changed)
  
-    # ------------------------------------------------------------------ Mode
+    # ------------------------------------------------------------------ Mode & Scenario
  
     def _on_mode_changed(self, idx):
         online = (idx == 0)
         sim    = (idx == 1)
         play   = (idx == 2)
+        
+        self._grp_scenario.setVisible(play)
+        
         for w in (self._lbl_port, self._cb_port, self._btn_refresh,
                   self._lbl_baud, self._cb_baud):
             w.setVisible(online)
@@ -768,6 +834,158 @@ class QualMainWindow(QMainWindow):
             w.setVisible(sim)
         for w in (self._btn_pick_file, self._lbl_speed, self._spin_speed):
             w.setVisible(play)
+
+    def _on_sc_action_changed(self, action):
+        v1_show = v2_show = False
+        lbl_v1 = lbl_v2 = ""
+        
+        if action == "Scale (%)":
+            v1_show = True; lbl_v1 = "Amp (%):"
+        elif action == "Add Harmonic":
+            v1_show = v2_show = True
+            lbl_v1 = "Amp (%):"; lbl_v2 = "Bậc (Order):"
+        elif action == "Add Flicker":
+            v1_show = v2_show = True
+            lbl_v1 = "Amp (%):"; lbl_v2 = "Freq (Hz):"
+            
+        self._lbl_sc_v1.setText(lbl_v1)
+        self._lbl_sc_v1.setVisible(v1_show)
+        self._spin_sc_v1.setVisible(v1_show)
+        
+        self._lbl_sc_v2.setText(lbl_v2)
+        self._lbl_sc_v2.setVisible(v2_show)
+        self._spin_sc_v2.setVisible(v2_show)
+        
+    def _add_scenario_rule(self):
+        start = self._spin_sc_start.value()
+        end = self._spin_sc_end.value()
+        if start >= end:
+            QMessageBox.warning(self, "Lỗi", "Start Index phải nhỏ hơn End Index!")
+            return
+            
+        action = self._cb_sc_action.currentText()
+        v1 = self._spin_sc_v1.value()
+        v2 = self._spin_sc_v2.value()
+        phase = self._cb_sc_phase.currentText()
+        
+        # Crop/Delete bắt buộc phải áp dụng cho tất cả các pha để giữ đồng bộ thời gian
+        if action == "Crop/Delete" and phase != "All":
+            phase = "All"
+        
+        rule = {"start": start, "end": end, "action": action, "v1": v1, "v2": v2, "phase": phase}
+        self._scenario_rules.append(rule)
+        
+        text = f"[{start} ➔ {end}] [{phase}] {action}"
+        if action in ("Scale (%)", "Add Harmonic", "Add Flicker"):
+            text += f" | {self._lbl_sc_v1.text()} {v1}"
+        if action in ("Add Harmonic", "Add Flicker"):
+            text += f" | {self._lbl_sc_v2.text()} {v2}"
+            
+        self._list_sc_rules.addItem(text)
+        
+    def _clear_scenario_rules(self):
+        self._scenario_rules.clear()
+        self._list_sc_rules.clear()
+        
+    def _build_scenario(self):
+        if not self._play_path or not Path(self._play_path).exists():
+            QMessageBox.warning(self, "Lỗi", "Vui lòng chọn một file log gốc trước khi Build!")
+            return
+        
+        if not self._scenario_rules:
+            QMessageBox.warning(self, "Lỗi", "Chưa có quy tắc (Rule) nào được thêm!")
+            return
+            
+        try:
+            t_list, u1, u2, u3, fw_min, fw_sec, fw_ms = [], [], [], [], [], [], []
+            with open(self._play_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    idx = float(row.get('index', row.get('t_s', 0)))
+                    t_list.append(idx)
+                    u1.append(float(row.get('U1_mV', 0)))
+                    u2.append(float(row.get('U2_mV', 0)))
+                    u3.append(float(row.get('U3_mV', 0)))
+                    fw_min.append(int(row.get('fw_min', 0)) if row.get('fw_min') else 0)
+                    fw_sec.append(int(row.get('fw_sec', 0)) if row.get('fw_sec') else 0)
+                    fw_ms.append(int(row.get('fw_ms', 0)) if row.get('fw_ms') else 0)
+            
+            t_arr = np.array(t_list, dtype=np.float64)
+            u_arr = [np.array(u1, dtype=np.float32), np.array(u2, dtype=np.float32), np.array(u3, dtype=np.float32)]
+            fw_min_arr = np.array(fw_min, dtype=np.int16)
+            fw_sec_arr = np.array(fw_sec, dtype=np.int8)
+            fw_ms_arr = np.array(fw_ms, dtype=np.int16)
+            
+            spc = self._spin_spc.value()
+            grid_freq = self._spin_grid_freq.value()
+            
+            phase_map = {
+                "All": [0, 1, 2],
+                "U1": [0], "U2": [1], "U3": [2],
+                "U1+U2": [0, 1], "U2+U3": [1, 2], "U3+U1": [0, 2]
+            }
+            
+            for rule in self._scenario_rules:
+                start = rule['start']
+                end = rule['end']
+                action = rule['action']
+                v1 = rule['v1']
+                v2 = rule['v2']
+                phase = rule['phase']
+                
+                mask = (t_arr >= start) & (t_arr <= end)
+                if not np.any(mask):
+                    continue
+                    
+                target_idx = phase_map.get(phase, [0, 1, 2])
+                
+                if action == "Scale (%)":
+                    factor = v1 / 100.0
+                    for i in target_idx: u_arr[i][mask] *= factor
+                elif action == "Cut to 0":
+                    for i in target_idx: u_arr[i][mask] = 0.0
+                elif action == "Add Harmonic":
+                    amp_pct = v1 / 100.0
+                    order = v2
+                    angle_u1 = (2 * np.pi * t_arr[mask] * order) / spc
+                    angle_u2 = angle_u1 - order * (2 * np.pi / 3)
+                    angle_u3 = angle_u1 + order * (2 * np.pi / 3)
+                    angles = [angle_u1, angle_u2, angle_u3]
+                    
+                    for i in target_idx:
+                        peak_val = np.max(np.abs(u_arr[i])) if len(u_arr[i]) > 0 else 230000
+                        u_arr[i][mask] += (peak_val * amp_pct) * np.sin(angles[i])
+                elif action == "Add Flicker":
+                    amp_pct = v1 / 100.0
+                    f_freq = v2
+                    fs = spc * grid_freq
+                    t_sec = t_arr[mask] / fs
+                    modulation = 1.0 + amp_pct * np.sin(2 * np.pi * f_freq * t_sec)
+                    for i in target_idx: u_arr[i][mask] *= modulation
+                elif action == "Crop/Delete":
+                    keep_mask = ~mask
+                    t_arr = t_arr[keep_mask]
+                    t_arr = np.arange(len(t_arr), dtype=np.float64)
+                    for i in range(3): u_arr[i] = u_arr[i][keep_mask]
+                    fw_min_arr = fw_min_arr[keep_mask]
+                    fw_sec_arr = fw_sec_arr[keep_mask]
+                    fw_ms_arr = fw_ms_arr[keep_mask]
+            
+            default_name = str(Path(self._play_path).with_name(f"scenario_{Path(self._play_path).name}"))
+            save_path, _ = QFileDialog.getSaveFileName(self, "Save Scenario CSV", default_name, "CSV files (*.csv)")
+            if save_path:
+                export_csv_snapshot(
+                    save_path, 
+                    t_arr.tolist(), 
+                    [u_arr[0].tolist(), u_arr[1].tolist(), u_arr[2].tolist()],
+                    fw_min_arr.tolist(), fw_sec_arr.tolist(), fw_ms_arr.tolist()
+                )
+                self._play_path = save_path
+                self._btn_pick_file.setText(Path(self._play_path).name)
+                QMessageBox.information(self, "Thành công", f"Đã build và nạp kịch bản:\n{save_path}")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Lỗi Build", str(e))
  
     def _refresh_ports(self):
         current = self._cb_port.currentText()
@@ -886,14 +1104,12 @@ class QualMainWindow(QMainWindow):
     def _on_start(self):
         self._stop_provider()
         
-        # Đọc toàn bộ Config mới từ UI
         config = {
             "samples_per_cycle": self._spin_spc.value(),
             "grid_freq": self._spin_grid_freq.value(),
             "adc_scale": self._spin_adc_scale.value()
         }
         
-        # Tái tạo lại Buffer để tương thích với cấu hình mới
         max_samples = int(BUFFER_SECS * config["samples_per_cycle"] * config["grid_freq"] * 1.2)
         self._buf = _RollingBuffer(max_samples)
         self._spin_history.setRange(0.0, float(max_samples))
@@ -937,7 +1153,6 @@ class QualMainWindow(QMainWindow):
             port = self._cb_port.currentText().strip()
             baud_str = self._cb_baud.currentText().strip()
             
-            # Logic chọn Port tự động
             if port.lower() == "auto" or not port:
                 ports = list_serial_ports()
                 if not ports:
@@ -948,7 +1163,6 @@ class QualMainWindow(QMainWindow):
                     return
                 port = ports[0]
             
-            # Logic chọn Baud tự động
             if baud_str.lower() == "auto" or not baud_str:
                 baud = 2000000
                 self._autobaud_scanning = True
@@ -1033,7 +1247,6 @@ class QualMainWindow(QMainWindow):
         port = self._cb_port.currentText().strip()
         self._provider.stop()
         
-        # Lấy lại config hiện tại
         config = {
             "samples_per_cycle": self._spin_spc.value(),
             "grid_freq": self._spin_grid_freq.value(),
