@@ -299,6 +299,7 @@ class QualMainWindow(QMainWindow):
  
         self._build_ui()
         self._build_plot()
+        self._update_plot_labels() # Update initial dynamic units
         self.resize(1280, 800)
  
         self._timer = QTimer(self)
@@ -364,7 +365,7 @@ class QualMainWindow(QMainWindow):
             self._set_log_button_idle()
             self._lbl_status.setText(f"Saved {rows_written} buffered rows → {self._log_path}")
  
-    # ------------------------------------------------------------------ UI
+    # ------------------------------------------------------------------ UI Building
  
     def _build_ui(self):
         central = QWidget()
@@ -396,15 +397,17 @@ class QualMainWindow(QMainWindow):
         self._spin_adc_scale.setDecimals(4)
         self._spin_adc_scale.setValue(1.0)
         self._spin_adc_scale.setToolTip("Nhập 1 để xem Raw ADC. Nhập tỷ lệ chia để xem U_rms")
+        self._spin_adc_scale.valueChanged.connect(self._update_plot_labels) # Trigger unit change
         cfg_row.addWidget(self._spin_adc_scale)
         
         cfg_row.addStretch(1)
         root.addWidget(cfg_grp)
  
-        # ── Connection group ──────────────────────────────────────────
-        conn_grp = QGroupBox("Connection")
-        conn_row = QHBoxLayout(conn_grp)
- 
+        # ── Connection & Logging group ─────────────────────────────────
+        conn_grp = QGroupBox("Connection & Logging")
+        conn_vbox = QVBoxLayout(conn_grp)
+        
+        conn_row = QHBoxLayout()
         conn_row.addWidget(QLabel("Mode:"))
         self._cb_mode = QComboBox()
         self._cb_mode.addItems(["Online (COM)", "Simulation", "Playback (log)"])
@@ -489,6 +492,27 @@ class QualMainWindow(QMainWindow):
         self._btn_start.setFixedWidth(90)
         self._btn_start.clicked.connect(self._on_startstop)
         conn_row.addWidget(self._btn_start)
+        conn_vbox.addLayout(conn_row)
+        
+        # Logging Row (ẩn khi ở Playback)
+        log_row = QHBoxLayout()
+        self._chk_log = QCheckBox("Log to CSV")
+        self._chk_log.stateChanged.connect(self._on_log_toggle)
+        log_row.addWidget(self._chk_log)
+        
+        self._btn_log_file = QPushButton(Path(self._log_path).name)
+        self._btn_log_file.setToolTip(self._log_path)
+        self._btn_log_file.setMaximumWidth(160)
+        self._btn_log_file.clicked.connect(self._pick_log_file)
+        log_row.addWidget(self._btn_log_file)
+ 
+        self._btn_open_log_folder = QPushButton("Open")
+        self._btn_open_log_folder.setToolTip(str(Path(self._log_path).resolve().parent))
+        self._btn_open_log_folder.setFixedWidth(48)
+        self._btn_open_log_folder.clicked.connect(self._open_log_folder)
+        log_row.addWidget(self._btn_open_log_folder)
+        log_row.addStretch(1)
+        conn_vbox.addLayout(log_row)
  
         root.addWidget(conn_grp)
         
@@ -559,28 +583,29 @@ class QualMainWindow(QMainWindow):
         root.addWidget(self._grp_scenario)
         self._on_sc_action_changed(self._cb_sc_action.currentText())
  
-        # ── Options row ───────────────────────────────────────────────
-        opt_row = QHBoxLayout()
- 
-        opt_row.addWidget(QLabel("Window (cycles):"))
+        # ── Display Settings group ──────────────────────────────────────
+        self._grp_display = QGroupBox("Display Settings")
+        disp_vbox = QVBoxLayout(self._grp_display)
+        
+        disp_row1 = QHBoxLayout()
+        disp_row1.addWidget(QLabel("Window (cycles):"))
         self._spin_window = QSpinBox()
         self._spin_window.setRange(1, 5000)
         self._spin_window.setValue(4)
         self._spin_window.setFixedWidth(60)
         self._spin_window.valueChanged.connect(self._update_window_samples)
-        opt_row.addWidget(self._spin_window)
+        disp_row1.addWidget(self._spin_window)
  
         self._sld_window = QSlider(Qt.Horizontal)
         self._sld_window.setRange(1, 500)
         self._sld_window.setValue(4)
         self._sld_window.setMinimumWidth(100)
         self._sld_window.setMaximumWidth(200)
-        
         self._sld_window.valueChanged.connect(self._spin_window.setValue)
         self._spin_window.valueChanged.connect(self._sld_window.setValue)
-        opt_row.addWidget(self._sld_window)
+        disp_row1.addWidget(self._sld_window)
  
-        opt_row.addWidget(QLabel("Y zoom (×):"))
+        disp_row1.addWidget(QLabel("Y zoom (×):"))
         self._spin_ugain = QDoubleSpinBox()
         self._spin_ugain.setRange(1e-9, 1e6)
         self._spin_ugain.setValue(1.0)
@@ -588,55 +613,41 @@ class QualMainWindow(QMainWindow):
         self._spin_ugain.setFixedWidth(110)
         self._spin_ugain.setToolTip("Chi anh huong do phong dai truc Y de quan sat, khong doi gia tri do that")
         self._spin_ugain.valueChanged.connect(self._on_ugain_changed)
-        opt_row.addWidget(self._spin_ugain)
- 
-        self._chk_log = QCheckBox("Log to CSV")
-        self._chk_log.stateChanged.connect(self._on_log_toggle)
-        opt_row.addWidget(self._chk_log)
- 
+        disp_row1.addWidget(self._spin_ugain)
+        
+        disp_row1.addSpacing(12)
         self._chk_sample_dots = QCheckBox("Sample dots")
         self._chk_sample_dots.setChecked(True)
-        self._chk_sample_dots.setToolTip(
-            "Show one dot per rendered sample when the visible point count is low enough")
+        self._chk_sample_dots.setToolTip("Show one dot per rendered sample when the visible point count is low enough")
         self._chk_sample_dots.stateChanged.connect(self._on_plot_style_changed)
-        opt_row.addWidget(self._chk_sample_dots)
- 
-        self._btn_log_file = QPushButton(Path(self._log_path).name)
-        self._btn_log_file.setToolTip(self._log_path)
-        self._btn_log_file.setMaximumWidth(160)
-        self._btn_log_file.clicked.connect(self._pick_log_file)
-        opt_row.addWidget(self._btn_log_file)
- 
-        self._btn_open_log_folder = QPushButton("Open")
-        self._btn_open_log_folder.setToolTip(str(Path(self._log_path).resolve().parent))
-        self._btn_open_log_folder.setFixedWidth(48)
-        self._btn_open_log_folder.clicked.connect(self._open_log_folder)
-        opt_row.addWidget(self._btn_open_log_folder)
- 
+        disp_row1.addWidget(self._chk_sample_dots)
+        disp_row1.addStretch(1)
+        disp_vbox.addLayout(disp_row1)
+        
+        disp_row2 = QHBoxLayout()
+        disp_row2.addWidget(QLabel("Show Phase:"))
         self._chk_u = []
         for label in ("U1", "U2", "U3"):
             chk = QCheckBox(label)
             chk.setChecked(True)
             chk.stateChanged.connect(self._on_channel_toggle)
-            opt_row.addWidget(chk)
+            disp_row2.addWidget(chk)
             self._chk_u.append(chk)
  
-        opt_row.addSpacing(12)
-        opt_row.addWidget(QLabel("Compound:"))
+        disp_row2.addSpacing(12)
+        disp_row2.addWidget(QLabel("Compound Phase:"))
         self._chk_compound = []
         for short_label, _full_label, _color, _src_a, _src_b in COMPOUND_CHANNELS:
             chk = QCheckBox(short_label)
             chk.setChecked(True)
             chk.stateChanged.connect(self._on_channel_toggle)
-            opt_row.addWidget(chk)
+            disp_row2.addWidget(chk)
             self._chk_compound.append(chk)
- 
-        opt_row.addStretch(1)
-        root.addLayout(opt_row)
- 
-        hist_row = QHBoxLayout()
-        hist_row.addWidget(QLabel("Go to (index):"))
- 
+        disp_row2.addStretch(1)
+        disp_vbox.addLayout(disp_row2)
+        
+        disp_row3 = QHBoxLayout()
+        disp_row3.addWidget(QLabel("Go to (index):"))
         self._spin_history = QDoubleSpinBox()
         self._spin_history.setRange(0.0, 1.0)
         self._spin_history.setDecimals(0)
@@ -645,17 +656,17 @@ class QualMainWindow(QMainWindow):
         self._spin_history.setFixedWidth(110)
         self._spin_history.lineEdit().textEdited.connect(self._on_history_text_edited)
         self._spin_history.editingFinished.connect(self._on_history_go)
-        hist_row.addWidget(self._spin_history)
+        disp_row3.addWidget(self._spin_history)
  
         self._btn_history_go = QPushButton("Go")
         self._btn_history_go.setFixedWidth(36)
         self._btn_history_go.clicked.connect(self._on_history_go)
-        hist_row.addWidget(self._btn_history_go)
+        disp_row3.addWidget(self._btn_history_go)
  
         self._btn_back_to_live = QPushButton("⬤ Live")
         self._btn_back_to_live.setFixedWidth(70)
         self._btn_back_to_live.clicked.connect(self._on_back_to_live)
-        hist_row.addWidget(self._btn_back_to_live)
+        disp_row3.addWidget(self._btn_back_to_live)
  
         self._sld_history = QSlider(Qt.Horizontal)
         self._sld_history.setRange(0, HISTORY_SLIDER_STEPS)
@@ -663,20 +674,23 @@ class QualMainWindow(QMainWindow):
         self._sld_history.sliderPressed.connect(self._on_history_slider_pressed)
         self._sld_history.sliderReleased.connect(self._on_history_slider_released)
         self._sld_history.valueChanged.connect(self._on_history_slider_changed)
-        hist_row.addWidget(self._sld_history, stretch=1)
+        disp_row3.addWidget(self._sld_history, stretch=1)
  
         self._lbl_history_state = QLabel("Live: waiting for buffer")
         self._lbl_history_state.setStyleSheet("color:#AAB2D5; padding-left:8px;")
         self._lbl_history_state.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self._lbl_history_state.setMinimumWidth(80)
         self._lbl_history_state.setMaximumWidth(300)
-        hist_row.addWidget(self._lbl_history_state)
+        disp_row3.addWidget(self._lbl_history_state)
+        disp_vbox.addLayout(disp_row3)
+        
+        root.addWidget(self._grp_display)
  
-        root.addLayout(hist_row)
- 
+        # ── Plots ─────────────────────────────────────────────────────
         self._plot_area = QVBoxLayout()
         root.addLayout(self._plot_area, stretch=1)
  
+        # ── Status bar ────────────────────────────────────────────────
         _sb_widget = QWidget()
         _sb_widget.setStyleSheet("background:#0D0D1A; border-top:1px solid #333;")
         _sb_row = QHBoxLayout(_sb_widget)
@@ -695,9 +709,9 @@ class QualMainWindow(QMainWindow):
  
         self._lbl_status   = _mk_sb_lbl("Stopped",              260)
         self._lbl_diag     = _mk_sb_lbl("lines: 0 | frames: 0", 280)
-        self._lbl_rms_v    = _mk_sb_lbl("V_rms: —",             300)
+        self._lbl_rms_v    = _mk_sb_lbl("RMS: —",               300)
         self._lbl_fs       = _mk_sb_lbl("fs: —",                 95)
-        self._lbl_fps      = _mk_sb_lbl("fps: —",                65)
+        self._lbl_fps      = _lbl_fps = _mk_sb_lbl("fps: —",     65)
         self._lbl_log_file = _mk_sb_lbl("",                      180,
             "color:#AAB2D5; font-family:monospace;")
         self._lbl_log_file.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -722,13 +736,32 @@ class QualMainWindow(QMainWindow):
  
     # ------------------------------------------------------------------ Plot
  
+    def _get_unit_str(self):
+        """Returns the appropriate unit based on ADC scale configuration."""
+        return "ADC" if self._spin_adc_scale.value() == 1.0 else "mV"
+
+    def _update_plot_labels(self, *_args):
+        """Update chart titles and axis labels dynamically to fix the kmV error."""
+        unit = self._get_unit_str()
+        
+        # Plot 1 (Phase Voltages)
+        title_main = f"Amplitude [{unit}]" if unit == "ADC" else f"Voltage [{unit}]"
+        self._pw.setTitle(title_main)
+        self._pw.setLabel("left", "Amplitude" if unit == "ADC" else "U", units=unit)
+        
+        # Plot 2 (Compound Voltages)
+        title_comp = f"Compound Amplitude [{unit}]" if unit == "ADC" else f"Compound Voltages [{unit}]"
+        self._pw_u12.setTitle(title_comp)
+        self._pw_u12.setLabel("left", "Amplitude" if unit == "ADC" else "U", units=unit)
+
     def _build_plot(self):
-        self._pw = pg.PlotWidget(title="Voltage  [mV]")
+        self._pw = pg.PlotWidget(title="Voltage [mV]")
         self._pw.showGrid(x=True, y=True, alpha=0.25)
         self._pw.setLabel("left", "U", units="mV")
         self._pw.setLabel("bottom", "Index", units="samples")
         self._pw.addLegend(offset=(10, 10))
         self._pw.setMouseEnabled(x=True, y=False)
+        self._pw.getAxis('left').enableAutoSIPrefix(False) # Vô hiệu hóa auto prefix (chống sinh ra kmV)
  
         self._curve_pens = [pg.mkPen(col, width=1.5) for col in COLORS_V]
         self._curve_brushes = [pg.mkBrush(col) for col in COLORS_V]
@@ -765,12 +798,13 @@ class QualMainWindow(QMainWindow):
  
         self._plot_area.addWidget(self._pw, stretch=1)
  
-        self._pw_u12 = pg.PlotWidget(title="Compound voltages  [mV]")
+        self._pw_u12 = pg.PlotWidget(title="Compound voltages [mV]")
         self._pw_u12.showGrid(x=True, y=True, alpha=0.25)
         self._pw_u12.setLabel("left", "U", units="mV")
         self._pw_u12.setLabel("bottom", "Index", units="samples")
         self._pw_u12.addLegend(offset=(10, 10))
         self._pw_u12.setMouseEnabled(x=True, y=False)
+        self._pw_u12.getAxis('left').enableAutoSIPrefix(False) # Vô hiệu hóa auto prefix
  
         self._compound_pens = [
             pg.mkPen(color, width=1.5)
@@ -834,6 +868,10 @@ class QualMainWindow(QMainWindow):
             w.setVisible(sim)
         for w in (self._btn_pick_file, self._lbl_speed, self._spin_speed):
             w.setVisible(play)
+            
+        # Ẩn nút Log to CSV đi khi đang ở mode Playback
+        for w in (self._chk_log, self._btn_log_file, self._btn_open_log_folder):
+            w.setVisible(not play)
 
     def _on_sc_action_changed(self, action):
         v1_show = v2_show = False
@@ -1790,8 +1828,9 @@ class QualMainWindow(QMainWindow):
         else:
             self._lbl_diag.setText(f"buf: {self._buf.sample_count}")
  
+        unit = self._get_unit_str()
         self._lbl_rms_v.setText(
-            f"V_rms:  L1={rms_u[0]:.1f}  L2={rms_u[1]:.1f}  L3={rms_u[2]:.1f} mV")
+            f"RMS:  L1={rms_u[0]:.1f}  L2={rms_u[1]:.1f}  L3={rms_u[2]:.1f} {unit}")
  
         if self._provider is not None:
             err = getattr(self._provider, "error", None)
@@ -1824,10 +1863,11 @@ class QualMainWindow(QMainWindow):
         self._vline_u12.setPos(x)
  
     def _set_cursor_label(self, t_val, u_vals, include_phases, include_compounds):
+        unit = self._get_unit_str()
         parts = [f"idx={t_val:.0f}"]
         if include_phases:
             phase_text = "  ".join(f"U{k+1}={u_vals[k]:.1f}" for k in range(3))
-            parts.append(f"{phase_text} mV")
+            parts.append(f"{phase_text} {unit}")
         if include_compounds:
             compound_vals = self._compound_values(u_vals)
             compound_text = "  ".join(
@@ -1836,7 +1876,7 @@ class QualMainWindow(QMainWindow):
                 if self._chk_compound[idx].isChecked()
             )
             if compound_text:
-                parts.append(f"{compound_text} mV")
+                parts.append(f"{compound_text} {unit}")
         self._lbl_cursor.setText("    ".join(parts))
  
     def _on_mouse(self, evt):
