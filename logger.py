@@ -19,7 +19,7 @@ from typing import Optional
  
 _SENTINEL = object()   # poison pill to stop the writer thread
 _CSV_HEADER = [
-    "t_s", "fw_min", "fw_sec", "fw_ms",
+    "index", "fw_min", "fw_sec", "fw_ms",
     "U1_mV", "U2_mV", "U3_mV",
     "rms_U1_mV", "rms_U2_mV", "rms_U3_mV",
     "U12_mV", "U23_mV", "U31_mV",
@@ -90,7 +90,7 @@ def export_csv_snapshot(path: str, t_values, u_values,
             fw_sec = int(_fw_sec[i]) if i < len(_fw_sec) else ""
             fw_ms  = int(_fw_ms[i])  if i < len(_fw_ms)  else ""
             writer.writerow([
-                f"{t_s:.6f}", fw_min, fw_sec, fw_ms,
+                f"{t_s:.0f}", fw_min, fw_sec, fw_ms,
                 _f(u1f), _f(u2f), _f(u3f),
                 _f(rms_u1[i]),  _f(rms_u2[i]),  _f(rms_u3[i]),
                 _f(u12v[i]),    _f(u23v[i]),    _f(u31v[i]),
@@ -114,16 +114,7 @@ def prepare_csv_log(path: str, overwrite: bool = False):
  
  
 class QualDataLogger:
-    """Thread-safe CSV logger.
- 
-    Usage::
- 
-        log_q = queue.Queue(maxsize=...)
-        logger = QualDataLogger("output.csv", log_q)
-        logger.start()
-        # ... push frames into log_q ...
-        logger.stop()   # flushes remaining frames and closes file
-    """
+    """Thread-safe CSV logger."""
  
     def __init__(self, path: str, in_q: queue.Queue, truncate: bool = False):
         self._path  = Path(path)
@@ -178,7 +169,7 @@ class QualDataLogger:
                         def _f(v):   return f"{v:.3f}" if v is not None else ""
                         def _rms(k): return _f(item.get(k))
                         writer.writerow([
-                            f"{t:.6f}", fw_min, fw_sec, fw_ms,
+                            f"{t:.0f}", fw_min, fw_sec, fw_ms,
                             _f(u[0]),   _f(u[1]),   _f(u[2]),
                             _rms("rms_U1_mV"),  _rms("rms_U2_mV"),  _rms("rms_U3_mV"),
                             _f(item.get("U12_mV")), _f(item.get("U23_mV")), _f(item.get("U31_mV")),
@@ -195,4 +186,3 @@ class QualDataLogger:
                         break
         except Exception as exc:
             self.error = str(exc)
- 

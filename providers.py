@@ -6,11 +6,6 @@ Three providers feed parsed frames into a queue.Queue:
  
 Binary current frames are accepted to keep sync with the live protocol, but the
 viewer still forwards only voltage frames to the GUI/logger.
- 
-QualSerialProvider  — real UART (USART1/UART_SP for qual-mtr-test, baud selectable)
-QualSimulationProvider — synthetic 3-phase sine generator
-QualFileProvider    — replay a saved log file
-list_serial_ports() — enumerate available COM ports
 """
 from __future__ import annotations
  
@@ -46,10 +41,6 @@ _BINARY_PACKET_SIZE = 13       # 1 sync + 3 timestamp + 8 data + 1 checksum
 _BINARY_PAYLOAD_SIZE = 11      # bytes 1–11 (checksum covers these)
 _BINARY_TS_SIZE = 3            # bytes 1–3: 24-bit timestamp
 _BINARY_DATA_SIZE = 8          # bytes 4–11: sample_index + V1/V2/V3
-_BINARY_VOLTAGE_SCALE_MV = 10.0
-_BINARY_CURRENT_SCALE_MA = 1.0
-_BINARY_SAMPLES_PER_CYCLE = 128
-_BINARY_FS_HZ = _BINARY_SAMPLES_PER_CYCLE * 50
 _BINARY_SAMPLE_MASK = (1 << 18) - 1
 _BINARY_SIGN_BIT = 1 << 17
 # Timestamp bit masks (24-bit little-endian)
@@ -75,12 +66,7 @@ def _parse_line(line: str) -> Optional[dict]:
  
  
 def _parse_saved_csv_line(line: str) -> Optional[dict]:
-    """Parse a saved waveform CSV row.
- 
-    Supports two formats:
-      Legacy (4-col):  t_s, U1_mV, U2_mV, U3_mV
-      Current (16-col): t_s, fw_min, fw_sec, fw_ms, U1_mV, U2_mV, U3_mV, ...
-    """
+    """Parse a saved waveform CSV row."""
     parts = [part.strip() for part in line.strip().split(",")]
     if not parts or parts[0] == "t_s" or parts[0] == "index":
         return None
@@ -89,7 +75,6 @@ def _parse_saved_csv_line(line: str) -> Optional[dict]:
     except ValueError:
         return None
     if len(parts) >= 7:
-        # Current format: fw_min at [1], fw_sec at [2], fw_ms at [3], U1-U3 at [4-6]
         try:
             fw_min = int(parts[1]) if parts[1] != "" else 0
             fw_sec = int(parts[2]) if parts[2] != "" else 0
@@ -102,7 +87,6 @@ def _parse_saved_csv_line(line: str) -> Optional[dict]:
         return {"t_s": t_s, "u": [u1, u2, u3],
                 "fw_min": fw_min, "fw_sec": fw_sec, "fw_ms": fw_ms}
     if len(parts) >= 4:
-        # Legacy format: U1-U3 at [1-3]
         try:
             u1 = float(parts[1])
             u2 = float(parts[2])
@@ -140,7 +124,7 @@ def _find_binary_sync(buf: bytes) -> int:
     return min(indices) if indices else -1
  
  
-def _parse_binary_packet(packet: bytes, state: dict, counters: Optional[dict] = None) -> Optional[dict]:
+def _parse_binary_packet(packet: bytes, state: dict, config: dict, counters: Optional[dict] = None) -> Optional[dict]:
     if len(packet) != _BINARY_PACKET_SIZE or packet[0] not in _BINARY_SYNC_VALUES:
         return None
     if _binary_checksum(packet[1:1 + _BINARY_PAYLOAD_SIZE]) != packet[-1]:
@@ -150,31 +134,39 @@ def _parse_binary_packet(packet: bytes, state: dict, counters: Optional[dict] = 
  
     sync_value = packet[0]
  
-    # --- Timestamp: bytes 1–3, 24-bit little-endian ---
+    spc = config.get("samples_per_cycle", 312)
+    adc_scale = config.get("adc_scale", 1.0)
+    
+    idx_bits = math.ceil(math.log2(spc)) if spc > 1 else 8
+    idx_mask = (1 << idx_bits) - 1
+ 
     ts_raw = int.from_bytes(packet[1:4], byteorder="little", signed=False)
     ts_ms  = ts_raw & _BINARY_TS_MS_MASK
     ts_sec = (ts_raw >> _BINARY_TS_SEC_SHIFT) & _BINARY_TS_SEC_MASK
     ts_min = (ts_raw >> _BINARY_TS_MIN_SHIFT) & _BINARY_TS_MIN_MASK
  
-    # --- ADC data: bytes 4–11, 64-bit little-endian ---
     payload = int.from_bytes(packet[4:4 + _BINARY_DATA_SIZE], byteorder="little", signed=False)
-    sample_pos = payload & 0xFF
-    if sample_pos >= _BINARY_SAMPLES_PER_CYCLE:
+    
+    sample_pos = payload & idx_mask
+    if sample_pos >= spc:
         return None
  
-    raw_s1 = (payload >> 8) & _BINARY_SAMPLE_MASK
-    raw_s2 = (payload >> 26) & _BINARY_SAMPLE_MASK
-    raw_s3 = (payload >> 44) & _BINARY_SAMPLE_MASK
+    raw_s1 = (payload >> idx_bits) & _BINARY_SAMPLE_MASK
+    raw_s2 = (payload >> (idx_bits + 18)) & _BINARY_SAMPLE_MASK
+    raw_s3 = (payload >> (idx_bits + 36)) & _BINARY_SAMPLE_MASK
+    
+    def apply_adc_scale(raw_val):
+        val_24 = _decode_signed18(raw_val) * 64
+        return val_24 / adc_scale
  
     if sync_value == _BINARY_VOLTAGE_SYNC:
-        scale = _BINARY_VOLTAGE_SCALE_MV
         value_key = "u"
         last_sample_pos = state.get("last_voltage_sample_pos")
         if last_sample_pos is None:
             state["last_voltage_sample_pos"] = sample_pos
             state["total_voltage_samples"] = 0
         else:
-            delta = (sample_pos - last_sample_pos) % _BINARY_SAMPLES_PER_CYCLE
+            delta = (sample_pos - last_sample_pos) % spc
             if delta == 0:
                 return None
             state["total_voltage_samples"] += delta
@@ -183,14 +175,13 @@ def _parse_binary_packet(packet: bytes, state: dict, counters: Optional[dict] = 
         t_s = float(state["total_voltage_samples"])
         state["last_voltage_t_s"] = t_s
     else:
-        scale = _BINARY_CURRENT_SCALE_MA
         value_key = "i"
         t_s = float(state.get("last_voltage_t_s", 0.0))
  
     values = [
-        _decode_signed18(raw_s1) * scale,
-        _decode_signed18(raw_s2) * scale,
-        _decode_signed18(raw_s3) * scale,
+        apply_adc_scale(raw_s1),
+        apply_adc_scale(raw_s2),
+        apply_adc_scale(raw_s3),
     ]
  
     frame: dict = {
@@ -202,18 +193,12 @@ def _parse_binary_packet(packet: bytes, state: dict, counters: Optional[dict] = 
         "fw_ms":  ts_ms,
     }
  
-    # --- Zero-crossing RMS (voltage path only) ---
-    # Each of 6 signals has its own accumulator.
-    # When sign changes (prev * curr < 0), the signal just crossed zero.
-    # At that point compute RMS over samples accumulated since last crossing,
-    # inject into frame, then reset the accumulator.
     if sync_value == _BINARY_VOLTAGE_SYNC:
         u1, u2, u3 = values
         u12 = u1 - u2
         u23 = u2 - u3
         u31 = u3 - u1
  
-        # Instantaneous compound voltages always present in voltage frames
         frame["U12_mV"] = u12
         frame["U23_mV"] = u23
         frame["U31_mV"] = u31
@@ -228,17 +213,17 @@ def _parse_binary_packet(packet: bytes, state: dict, counters: Optional[dict] = 
             prev = acc["prev"]
             if prev is not None:
                 crossing = (
-                    (prev != 0 and val == 0) or   # entering zero
-                    (prev == 0 and val != 0) or   # leaving zero
-                    (prev > 0  and val <  0) or   # pos -> neg
-                    (prev < 0  and val >  0)      # neg -> pos
+                    (prev != 0 and val == 0) or
+                    (prev == 0 and val != 0) or
+                    (prev > 0  and val <  0) or
+                    (prev < 0  and val >  0)
                 )
                 if crossing:
                     if acc["n"] >= 4:
                         frame[f"rms_{name}_mV"] = math.sqrt(acc["sq_sum"] / acc["n"])
                     acc["sq_sum"] = 0.0
                     acc["n"]      = 0
-            if val != 0:          # never accumulate zero samples
+            if val != 0:
                 acc["sq_sum"] += val * val
                 acc["n"]      += 1
             acc["prev"] = val
@@ -251,8 +236,9 @@ def _parse_binary_packet(packet: bytes, state: dict, counters: Optional[dict] = 
 # ---------------------------------------------------------------------------
  
 class _BaseProvider:
-    def __init__(self, out_q: queue.Queue):
+    def __init__(self, out_q: queue.Queue, config: dict = None):
         self._q     = out_q
+        self._config = config or {}
         self._mirror_q: Optional[queue.Queue] = None
         self._stop  = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -262,7 +248,7 @@ class _BaseProvider:
         self.loaded_frames = 0
         self.frames_dropped = 0
         self.checksum_errors = 0
-        self.raw_sniff: str = ""   # hex of first 8 bytes received
+        self.raw_sniff: str = ""
         self.error: Optional[str] = None
  
     def set_mirror_queue(self, mirror_q: Optional[queue.Queue]):
@@ -305,8 +291,8 @@ class _BaseProvider:
 # ---------------------------------------------------------------------------
  
 class QualSerialProvider(_BaseProvider):
-    def __init__(self, port: str, baud: int, out_q: queue.Queue):
-        super().__init__(out_q)
+    def __init__(self, port: str, baud: int, out_q: queue.Queue, config: dict = None):
+        super().__init__(out_q, config)
         self._port = port
         self._baud = baud
  
@@ -391,7 +377,7 @@ class QualSerialProvider(_BaseProvider):
                             break
  
                     packet = buf[:_BINARY_PACKET_SIZE]
-                    frame = _parse_binary_packet(packet, binary_state, parse_counters)
+                    frame = _parse_binary_packet(packet, binary_state, self._config, parse_counters)
                     if frame is None:
                         buf = buf[1:]
                         continue
@@ -415,51 +401,34 @@ class QualSerialProvider(_BaseProvider):
 # ---------------------------------------------------------------------------
  
 class QualSimulationProvider(_BaseProvider):
-    """Generates synthetic 3-phase sinusoidal data at QUAL protocol rate."""
- 
-    # QUAL sends 128 samples per power cycle (50 Hz -> 6400 samp/s)
-    QUAL_FS = 128 * 50  # 6400 Hz
- 
     def __init__(
         self,
         out_q: queue.Queue,
-        freq_hz: float = 50.0,
         v_rms_mv: float = 230_000.0,
-        i_rms_ma: float = 10_000.0,   # kept for API compat; not used
         phi_deg: float = 0.0,
+        config: dict = None,
     ):
-        super().__init__(out_q)
-        self._freq    = freq_hz
+        super().__init__(out_q, config)
         self._v_rms   = v_rms_mv
         self._phi_rad = math.radians(phi_deg)
  
     def _run(self):
         vpeak  = self._v_rms * math.sqrt(2)
-        fs     = self.QUAL_FS
-        period = 1.0 / fs          # 156.25 us between samples
-        t      = 0.0
-        sample_idx = 0             # Thêm biến đếm index
-        t0_wall = time.monotonic()
+        spc = self._config.get("samples_per_cycle", 312)
+        sample_idx = 0
  
         while not self._stop.is_set():
-            # Burst 128 samples (one power cycle) then sleep until real-time catches up
-            for _ in range(128):
-                u1 = vpeak * math.sin(2 * math.pi * self._freq * t)
-                u2 = vpeak * math.sin(2 * math.pi * self._freq * t - 2 * math.pi / 3)
-                u3 = vpeak * math.sin(2 * math.pi * self._freq * t + 2 * math.pi / 3)
+            for _ in range(spc):
+                angle = (2 * math.pi * sample_idx) / spc
+                u1 = vpeak * math.sin(angle)
+                u2 = vpeak * math.sin(angle - 2 * math.pi / 3)
+                u3 = vpeak * math.sin(angle + 2 * math.pi / 3)
                 
-                # Truyền sample_idx vào key "t_s" thay vì truyền t
                 self._push({"t_s": float(sample_idx), "u": [u1, u2, u3]})
-                
                 self.frames_rx += 1
-                t += period
-                sample_idx += 1    # Tăng index sau mỗi mẫu được sinh ra
+                sample_idx += 1
  
-            # Pace to real-time: sleep until wall-clock matches simulated time
-            elapsed_wall = time.monotonic() - t0_wall
-            sleep_s = t - elapsed_wall
-            if sleep_s > 0.0005:
-                time.sleep(sleep_s - 0.0003)   # wake slightly early
+            time.sleep(0.02)
  
  
 # ---------------------------------------------------------------------------
@@ -467,10 +436,8 @@ class QualSimulationProvider(_BaseProvider):
 # ---------------------------------------------------------------------------
  
 class QualFileProvider(_BaseProvider):
-    """Replays a saved QUAL log file, honouring the embedded timestamps."""
- 
-    def __init__(self, path: str, out_q: queue.Queue, speed: float = 1.0):
-        super().__init__(out_q)
+    def __init__(self, path: str, out_q: queue.Queue, speed: float = 1.0, config: dict = None):
+        super().__init__(out_q, config)
         self._path  = Path(path)
         self._speed = max(0.01, speed)
  
@@ -481,7 +448,6 @@ class QualFileProvider(_BaseProvider):
             self.error = str(exc)
             return
  
-        # Pre-parse all valid frames
         frames: list[dict] = []
         for raw in lines:
             self.lines_rx += 1
@@ -490,19 +456,20 @@ class QualFileProvider(_BaseProvider):
                 frames.append(f)
  
         self.loaded_frames = len(frames)
- 
         if not frames:
             self.error = "No valid playback frames found in file"
             return
  
         t_file_start = frames[0]["t_s"]
         t_wall_start = time.monotonic()
+        spc = self._config.get("samples_per_cycle", 312)
+        freq = self._config.get("grid_freq", 50.0)
  
         for frame in frames:
             if self._stop.is_set():
                 break
-            # Compute how long to wait (scaled by speed)
-            t_file_offset = (frame["t_s"] - t_file_start) / (128 * 50.0) # Convert index back to seconds
+            # Tính thời gian chờ dựa trên config động
+            t_file_offset = (frame["t_s"] - t_file_start) / (spc * freq)
             t_wall_target = t_wall_start + t_file_offset / self._speed
             wait = t_wall_target - time.monotonic()
             if wait > 0.001:

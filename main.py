@@ -40,11 +40,12 @@ from providers import (
 # ---------------------------------------------------------------------------
  
 BUFFER_SECS = 120.0
-QUAL_FS_HZ  = 128          # samples per cycle *per phase*
-MAX_SAMPLES = int(BUFFER_SECS * QUAL_FS_HZ * 50 * 1.2)  # 6400 samp/s × 120 s × 1.2
+DEFAULT_SPC = 312
+DEFAULT_FREQ = 50.0
+MAX_SAMPLES = int(BUFFER_SECS * DEFAULT_SPC * DEFAULT_FREQ * 1.2)
 REFRESH_MS  = 33           # ~30 FPS
 GUI_QUEUE_SECS = 1.0       # keep the GUI near real-time instead of building long delay
-GUI_QUEUE_MAX  = int(QUAL_FS_HZ * 50 * GUI_QUEUE_SECS)
+GUI_QUEUE_MAX  = int(DEFAULT_SPC * DEFAULT_FREQ * GUI_QUEUE_SECS)
 RENDER_SOFT_LIMIT = 20_000
 SAMPLE_DOT_RENDER_LIMIT = 4_000
 SAMPLE_DOT_SIZE = 4
@@ -86,7 +87,6 @@ class _RollingBuffer:
         self._head = 0   # next write position
         self._size = 0   # number of valid samples
  
-    # ------------------------------------------------------------------
     def push(self, t_s: float, u, fw_min=0, fw_sec=0, fw_ms=0):
         idx = self._head
         self._t[idx]      = t_s
@@ -98,10 +98,8 @@ class _RollingBuffer:
         if self._size < self._cap:
             self._size += 1
  
-    # ------------------------------------------------------------------
     def view(self, window_s: float):
         """Return (t_rel, [u1, u2, u3]) covering the last *window_s* samples.
- 
         t_rel is relative: 0 = start of window, window_s = now.
         Uses only as many samples as needed — no full-buffer scan.
         """
@@ -110,12 +108,9 @@ class _RollingBuffer:
             return empty, [empty, empty, empty]
  
         cap = self._cap
-        # How many samples fit in the window (with a 2× safety margin)
-        # BỎ NHÂN VỚI QUAL_FS_HZ Ở ĐÂY VÌ window_s BÂY GIỜ LÀ INDEX
         n_scan = min(self._size, max(64, int(window_s * 2.0)))
  
         if self._size < cap:
-            # Buffer not yet full: data lives in [0 .. size-1] sequentially
             start = max(0, self._size - n_scan)
             t_all = self._t[start:self._size]
             t_max = t_all[-1]
@@ -135,7 +130,6 @@ class _RollingBuffer:
             u_v = [self._u[ph, start + view_start:self._head] for ph in range(3)]
             return t_rel, u_v
  
-        # Full circular buffer with wraparound.
         idx = np.arange(self._head - n_scan, self._head) % cap
         t_all = self._t[idx]
         t_max = t_all[-1]
@@ -145,7 +139,6 @@ class _RollingBuffer:
         u_v = [self._u[ph, idx_view] for ph in range(3)]
         return t_rel, u_v
  
-    # ------------------------------------------------------------------
     @staticmethod
     def rms(u_v):
         return [
@@ -306,7 +299,7 @@ class QualMainWindow(QMainWindow):
  
         self._build_ui()
         self._build_plot()
-        self.resize(1280, 760)  # after _build_ui so hidden-widget min-size is already resolved
+        self.resize(1280, 760)
  
         self._timer = QTimer(self)
         self._timer.setInterval(REFRESH_MS)
@@ -380,6 +373,33 @@ class QualMainWindow(QMainWindow):
         root.setSpacing(4)
         root.setContentsMargins(6, 6, 6, 4)
  
+        # ── Configuration group ───────────────────────────────────────
+        cfg_grp = QGroupBox("Configuration")
+        cfg_row = QHBoxLayout(cfg_grp)
+        
+        cfg_row.addWidget(QLabel("Samples/Cycle:"))
+        self._spin_spc = QSpinBox()
+        self._spin_spc.setRange(10, 10000)
+        self._spin_spc.setValue(312)
+        cfg_row.addWidget(self._spin_spc)
+        
+        cfg_row.addWidget(QLabel("Grid Freq (Hz):"))
+        self._spin_grid_freq = QDoubleSpinBox()
+        self._spin_grid_freq.setRange(10.0, 400.0)
+        self._spin_grid_freq.setValue(50.0)
+        cfg_row.addWidget(self._spin_grid_freq)
+        
+        cfg_row.addWidget(QLabel("ADC Scale (÷):"))
+        self._spin_adc_scale = QDoubleSpinBox()
+        self._spin_adc_scale.setRange(0.0001, 1e9)
+        self._spin_adc_scale.setDecimals(4)
+        self._spin_adc_scale.setValue(1.0)
+        self._spin_adc_scale.setToolTip("Nhập 1 để xem Raw ADC. Nhập tỷ lệ chia để xem U_rms")
+        cfg_row.addWidget(self._spin_adc_scale)
+        
+        cfg_row.addStretch(1)
+        root.addWidget(cfg_grp)
+ 
         # ── Connection group ──────────────────────────────────────────
         conn_grp = QGroupBox("Connection")
         conn_row = QHBoxLayout(conn_grp)
@@ -395,6 +415,7 @@ class QualMainWindow(QMainWindow):
         conn_row.addWidget(self._lbl_port)
         self._cb_port = QComboBox()
         self._cb_port.setMinimumWidth(90)
+        self._cb_port.setEditable(True)  # Cho phép nhập tay
         conn_row.addWidget(self._cb_port)
  
         self._btn_refresh = QPushButton("⟳")
@@ -405,6 +426,8 @@ class QualMainWindow(QMainWindow):
         self._lbl_baud = QLabel("Baud:")
         conn_row.addWidget(self._lbl_baud)
         self._cb_baud = QComboBox()
+        self._cb_baud.setEditable(True)  # Cho phép nhập tay
+        self._cb_baud.addItem("Auto")
         for b in ("9600", "19200", "38400", "57600", "115200",
                   "230400", "460800", "921600", "960000", "2000000", "4000000"):
             self._cb_baud.addItem(b)
@@ -412,15 +435,6 @@ class QualMainWindow(QMainWindow):
         conn_row.addWidget(self._cb_baud)
  
         # Simulation widgets
-        self._lbl_freq = QLabel("Freq (Hz):")
-        conn_row.addWidget(self._lbl_freq)
-        self._spin_freq = QDoubleSpinBox()
-        self._spin_freq.setRange(40.0, 70.0)
-        self._spin_freq.setValue(50.0)
-        self._spin_freq.setSingleStep(0.1)
-        self._spin_freq.setDecimals(1)
-        conn_row.addWidget(self._spin_freq)
- 
         self._lbl_vrms = QLabel("V_rms (mV):")
         conn_row.addWidget(self._lbl_vrms)
         self._spin_vrms = QDoubleSpinBox()
@@ -454,8 +468,7 @@ class QualMainWindow(QMainWindow):
  
         conn_row.addStretch(1)
  
-        # Freeze sits LEFT of Start/Stop in a fixed-width container so
-        # Start/Stop never moves regardless of Freeze visibility.
+        # Freeze & Start
         _freeze_container = QWidget()
         _freeze_container.setFixedWidth(96)
         _freeze_inner = QHBoxLayout(_freeze_container)
@@ -482,8 +495,6 @@ class QualMainWindow(QMainWindow):
         opt_row = QHBoxLayout()
  
         opt_row.addWidget(QLabel("Window (samples):"))
-        
-        # Tạo ô nhập số (SpinBox)
         self._spin_window = QSpinBox()
         self._spin_window.setRange(10, 768000)
         self._spin_window.setValue(1280)
@@ -491,17 +502,14 @@ class QualMainWindow(QMainWindow):
         self._spin_window.valueChanged.connect(self._on_window_changed)
         opt_row.addWidget(self._spin_window)
  
-        # Tạo thanh kéo (Slider)
         self._sld_window = QSlider(Qt.Horizontal)
         self._sld_window.setRange(10, 768000)
         self._sld_window.setValue(1280)
         self._sld_window.setMinimumWidth(100)
         self._sld_window.setMaximumWidth(200)
         
-        # Liên kết đồng bộ 2 chiều giữa thanh kéo và ô nhập số
         self._sld_window.valueChanged.connect(self._spin_window.setValue)
         self._spin_window.valueChanged.connect(self._sld_window.setValue)
-        
         opt_row.addWidget(self._sld_window)
  
         opt_row.addWidget(QLabel("Y zoom (×):"))
@@ -537,7 +545,6 @@ class QualMainWindow(QMainWindow):
         self._btn_open_log_folder.clicked.connect(self._open_log_folder)
         opt_row.addWidget(self._btn_open_log_folder)
  
-        # Channel toggles (U only — I not used)
         self._chk_u = []
         for label in ("U1", "U2", "U3"):
             chk = QCheckBox(label)
@@ -563,7 +570,7 @@ class QualMainWindow(QMainWindow):
         hist_row.addWidget(QLabel("Go to (index):"))
  
         self._spin_history = QDoubleSpinBox()
-        self._spin_history.setRange(0.0, float(MAX_SAMPLES))
+        self._spin_history.setRange(0.0, 1.0) # Sẽ cập nhật động khi ấn Start
         self._spin_history.setDecimals(0)
         self._spin_history.setSingleStep(100.0)
         self._spin_history.setKeyboardTracking(False)
@@ -599,22 +606,16 @@ class QualMainWindow(QMainWindow):
  
         root.addLayout(hist_row)
  
-        # Plot placeholder
         self._plot_area = QVBoxLayout()
         root.addLayout(self._plot_area, stretch=1)
  
-        # ── Status bar — plain QHBoxLayout (no QStatusBar zone-overlap) ──────
         _sb_widget = QWidget()
-        _sb_widget.setStyleSheet(
-            "background:#0D0D1A; border-top:1px solid #333;")
+        _sb_widget.setStyleSheet("background:#0D0D1A; border-top:1px solid #333;")
         _sb_row = QHBoxLayout(_sb_widget)
         _sb_row.setContentsMargins(6, 2, 6, 2)
         _sb_row.setSpacing(4)
         root.addWidget(_sb_widget)
  
-        # QSizePolicy.Preferred: widget claims sizeHint (= text width), can
-        # shrink/grow.  setMaximumWidth caps growth so long texts don't steal
-        # space from neighbours.  No Ignored — that was starving labels.
         def _mk_sb_lbl(text, max_w, style=""):
             lbl = QLabel(text)
             lbl.setMinimumWidth(1)
@@ -641,13 +642,12 @@ class QualMainWindow(QMainWindow):
             _sb_row.addWidget(w)
             _sb_row.addWidget(_sep())
  
-        _sb_row.addStretch(1)          # absorbs spare space — no label grows
+        _sb_row.addStretch(1)
         _sb_row.addWidget(self._lbl_log_file)
         _sb_row.addWidget(_sep())
         _sb_row.addWidget(self._lbl_cursor)
  
         self._refresh_log_path_ui()
- 
         self._refresh_ports()
         self._on_mode_changed(0)
         self._update_history_controls()
@@ -760,8 +760,7 @@ class QualMainWindow(QMainWindow):
         for w in (self._lbl_port, self._cb_port, self._btn_refresh,
                   self._lbl_baud, self._cb_baud):
             w.setVisible(online)
-        for w in (self._lbl_freq, self._spin_freq,
-                  self._lbl_vrms, self._spin_vrms,
+        for w in (self._lbl_vrms, self._spin_vrms,
                   self._lbl_phi,  self._spin_phi):
             w.setVisible(sim)
         for w in (self._btn_pick_file, self._lbl_speed, self._spin_speed):
@@ -770,9 +769,10 @@ class QualMainWindow(QMainWindow):
     def _refresh_ports(self):
         current = self._cb_port.currentText()
         self._cb_port.clear()
+        self._cb_port.addItem("Auto")
         ports = list_serial_ports()
         self._cb_port.addItems(ports)
-        if current in ports:
+        if current in ports or current == "Auto":
             self._cb_port.setCurrentText(current)
         elif "COM3" in ports:
             self._cb_port.setCurrentText("COM3")
@@ -882,13 +882,23 @@ class QualMainWindow(QMainWindow):
  
     def _on_start(self):
         self._stop_provider()
-        self._buf.reset()
+        
+        # Đọc toàn bộ Config mới từ UI
+        config = {
+            "samples_per_cycle": self._spin_spc.value(),
+            "grid_freq": self._spin_grid_freq.value(),
+            "adc_scale": self._spin_adc_scale.value()
+        }
+        
+        # Tái tạo lại Buffer để tương thích với cấu hình mới
+        max_samples = int(BUFFER_SECS * config["samples_per_cycle"] * config["grid_freq"] * 1.2)
+        self._buf = _RollingBuffer(max_samples)
+        self._spin_history.setRange(0.0, float(max_samples))
+        
         self._history_snapshot_dirty = True
         self._history_snapshot_t = np.empty(0, dtype=np.float64)
         self._history_snapshot_u = [
-            np.empty(0, dtype=np.float32),
-            np.empty(0, dtype=np.float32),
-            np.empty(0, dtype=np.float32),
+            np.empty(0, dtype=np.float32), np.empty(0, dtype=np.float32), np.empty(0, dtype=np.float32),
         ]
         self._frames_total = self._frames_since = 0
         self._tick_ts = time.monotonic()
@@ -900,9 +910,7 @@ class QualMainWindow(QMainWindow):
         self._latest_t = np.empty(0, dtype=np.float64)
         self._latest_t_abs = np.empty(0, dtype=np.float64)
         self._latest_u = [
-            np.empty(0, dtype=np.float32),
-            np.empty(0, dtype=np.float32),
-            np.empty(0, dtype=np.float32),
+            np.empty(0, dtype=np.float32), np.empty(0, dtype=np.float32), np.empty(0, dtype=np.float32),
         ]
         self._view_start_t = 0.0
         self._view_end_t = 0.0
@@ -917,31 +925,56 @@ class QualMainWindow(QMainWindow):
  
         mode = self._cb_mode.currentIndex()
         if mode == 0:
-            port = self._cb_port.currentText()
-            baud = int(self._cb_baud.currentText())
-            if not port:
-                self._lbl_status.setText("No COM port selected")
-                return
-            self._provider = QualSerialProvider(port, baud, self._gui_q)
-            # Auto-baud: build scan list of all other candidates (in priority order)
-            self._autobaud_scanning = True
-            self._autobaud_current_baud = baud
-            self._autobaud_remaining = [b for b in _AUTOBAUD_CANDIDATES if b != baud]
- 
-            self._autobaud_timer.start(_AUTOBAUD_WAIT_MS)
+            port = self._cb_port.currentText().strip()
+            baud_str = self._cb_baud.currentText().strip()
+            
+            # Logic chọn Port tự động
+            if port.lower() == "auto" or not port:
+                ports = list_serial_ports()
+                if not ports:
+                    self._lbl_status.setText("Chưa tìm thấy cổng COM nào cho Auto")
+                    self._btn_start.blockSignals(True)
+                    self._btn_start.setChecked(False)
+                    self._btn_start.blockSignals(False)
+                    return
+                port = ports[0]
+            
+            # Logic chọn Baud tự động
+            if baud_str.lower() == "auto" or not baud_str:
+                baud = 2000000
+                self._autobaud_scanning = True
+                self._autobaud_current_baud = baud
+                self._autobaud_remaining = [b for b in _AUTOBAUD_CANDIDATES if b != baud]
+                self._autobaud_timer.start(_AUTOBAUD_WAIT_MS)
+            else:
+                try:
+                    baud = int(baud_str)
+                    self._autobaud_scanning = False
+                except ValueError:
+                    self._lbl_status.setText("Lỗi: Baudrate nhập tay không hợp lệ")
+                    self._btn_start.blockSignals(True)
+                    self._btn_start.setChecked(False)
+                    self._btn_start.blockSignals(False)
+                    return
+                    
+            self._provider = QualSerialProvider(port, baud, self._gui_q, config)
+            
         elif mode == 1:
             self._provider = QualSimulationProvider(
                 self._gui_q,
-                freq_hz=self._spin_freq.value(),
                 v_rms_mv=self._spin_vrms.value(),
                 phi_deg=self._spin_phi.value(),
+                config=config
             )
         else:
             if not self._play_path:
                 self._lbl_status.setText("No log file selected")
+                self._btn_start.blockSignals(True)
+                self._btn_start.setChecked(False)
+                self._btn_start.blockSignals(False)
                 return
             self._provider = QualFileProvider(
-                self._play_path, self._gui_q, speed=self._spin_speed.value())
+                self._play_path, self._gui_q, speed=self._spin_speed.value(), config=config)
  
         self._provider.start()
         if self._chk_log.isChecked():
@@ -969,7 +1002,6 @@ class QualMainWindow(QMainWindow):
             return
  
         if self._provider.frames_rx >= _AUTOBAUD_MIN_FRAMES:
-            # Baud confirmed
             self._autobaud_scanning = False
             self._cb_baud.setCurrentText(str(self._autobaud_current_baud))
             self._lbl_status.setText(
@@ -977,13 +1009,11 @@ class QualMainWindow(QMainWindow):
             return
  
         if self._provider.bytes_rx == 0:
-            # No bytes at all: board not sending or wrong port — stop scanning
             self._autobaud_scanning = False
             self._lbl_status.setText(
                 "No data received — check port and board power")
             return
  
-        # bytes_rx > 0 but frames_rx == 0: garbage = wrong baud, try next
         if not self._autobaud_remaining:
             self._autobaud_scanning = False
             self._lbl_status.setText(
@@ -991,15 +1021,23 @@ class QualMainWindow(QMainWindow):
             return
  
         next_baud = self._autobaud_remaining.pop(0)
-        port = self._cb_port.currentText()
+        port = self._cb_port.currentText().strip()
         self._provider.stop()
-        self._provider = QualSerialProvider(port, next_baud, self._gui_q)
+        
+        # Lấy lại config hiện tại
+        config = {
+            "samples_per_cycle": self._spin_spc.value(),
+            "grid_freq": self._spin_grid_freq.value(),
+            "adc_scale": self._spin_adc_scale.value()
+        }
+        
+        self._provider = QualSerialProvider(port, next_baud, self._gui_q, config)
         self._provider.start()
         if self._logger is not None:
             self._provider.set_mirror_queue(self._log_q)
         self._autobaud_current_baud = next_baud
         tried = len(_AUTOBAUD_CANDIDATES) - len(self._autobaud_remaining)
-        total = len(_AUTOBAUD_CANDIDATES) + 1  # +1 for initial selected baud
+        total = len(_AUTOBAUD_CANDIDATES) + 1
         self._lbl_status.setText(
             f"Auto-baud: trying {next_baud:,} bps  ({tried}/{total})…")
         self._autobaud_timer.start(_AUTOBAUD_WAIT_MS)
