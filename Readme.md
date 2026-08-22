@@ -18,12 +18,12 @@ This is a streamlined release focusing on core visualization and scenario-buildi
 - Real-time display of voltages across dual interactive plots.
 - **Dynamic Units**: Automatically switches between `mV` and `ADC` based on the configured ADC Scale.
 - Supports 3 modes:
-	- `Online (COM)`: Reads from UART.
-	- `Simulation`: Generates an internal 3-phase sine wave.
-	- `Playback (log)`: Replays from a saved log file with custom playback speeds.
+    - `Online (COM)`: Reads from UART.
+    - `Simulation`: Generates an internal 3-phase sine wave.
+    - `Playback (log)`: Replays from a saved log file with custom playback speeds.
 - Auto-detects 2 data formats in Online mode:
-	- Legacy ASCII: `$Q,<u32_sec>,<u16_ms>,<U1>,<U2>,<U3>[,<I1>,<I2>,<I3>]`
-	- Binary frame with a dynamic layout: `sync + packed payload + checksum`.
+    - Legacy ASCII: `$Q,<u32_sec>,<u16_ms>,<U1>,<U2>,<U3>[,<I1>,<I2>,<I3>]`
+    - Binary frame with a dynamic layout: `sync + packed payload + checksum`.
 - **Integrated Scenario Builder**: Apply rules (Scale, Cut to 0, Add Harmonic, Add Flicker, Crop/Delete) to specific sample indexes and phases, and build new custom scenario CSV logs.
 - X-axis window is defined in `cycles` based on a configurable `Samples/Cycle` setting.
 - **Global Y-Zoom**: The Y-axis automatically scales up to fit data but does not automatically scale down, preventing erratic zooming. A manual Y-zoom multiplier is provided for inspection.
@@ -168,12 +168,12 @@ This mode is ideal for testing the UI, history review, markers, and logging with
 - Select `Mode = Playback (log)`.
 - Click `Log…` in the `Connection` group to choose a source playback file.
 - **Scenario Builder**:
-	- Specify a `Start Index` and `End Index`.
-	- Select the target `Phase` (All, U1, U2, U1+U2, etc.).
-	- Choose an `Action` (Scale %, Cut to 0, Add Harmonic, Add Flicker, Crop/Delete).
-	- Provide `Value 1` and `Value 2` as required by the action.
-	- Click `+ Add Rule` to append to the rule list.
-	- Click `▶ Build & Load Scenario CSV` to generate a manipulated log file and automatically load it into playback.
+    - Specify a `Start Index` and `End Index`.
+    - Select the target `Phase` (All, U1, U2, U1+U2, etc.).
+    - Choose an `Action` (Scale %, Cut to 0, Add Harmonic, Add Flicker, Crop/Delete).
+    - Provide `Value 1` and `Value 2` as required by the action.
+    - Click `+ Add Rule` to append to the rule list.
+    - Click `▶ Build & Load Scenario CSV` to generate a manipulated log file and automatically load it into playback.
 - Adjust the `Speed` to fast-forward or slow down playback.
 - Click `Start` to replay.
 
@@ -243,59 +243,56 @@ All data sources are normalized to an internal frame:
 
 The current release only utilizes the first 3 voltage values.
 
-### Dynamic Binary Frame
+### Dynamic Binary Frame (`sync` + `payload` + `checksum`)
 
-The current parser interprets incoming binary packets based on the `Configuration` values provided on the UI.
+To maintain high data throughput, the application supports a strictly structured 10-byte binary packet over UART.
 
-#### Protocol spec for firmware / hardware
+#### 1. Frame Byte Layout
 
-If you need to integrate another device into the app using the existing binary parser, consider this the mandatory input packet specification.
+Every transmitted frame must be exactly 10 bytes long. The layout is as follows:
 
-| Byte offset | Size | Name | Required | Description |
-| --- | --- | --- | --- | --- |
-| `0` | `1 byte` | `sync` | Yes | Must exactly be `0xA5` |
-| `1..8` | `8 bytes` | `payload` | Yes | Packed payload, read as `little-endian` |
-| `9` | `1 byte` | `checksum` | Yes | XOR of the entire `payload[0]..payload[7]` |
+| Byte Offset | Size | Name | Data Type | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| `0` | 1 byte | `sync` | Unsigned Int (8-bit) | Synchronization byte. Must exactly be `0xA5`. |
+| `1..8` | 8 bytes | `payload` | Unsigned Int (64-bit) | Packed data payload, transmitted in **Little-Endian** byte order. |
+| `9` | 1 byte | `checksum` | Unsigned Int (8-bit) | XOR checksum of the 8 `payload` bytes (`payload[0] ^ ... ^ payload[7]`). |
 
-The app only accepts the packet if all 3 conditions are met simultaneously:
+*The app only accepts the packet if the `sync` byte is correct, the length is exactly 10 bytes, and the `checksum` evaluates successfully.*
 
-- The first byte is `0xA5`
-- The total frame length is exactly `10 bytes`
-- The XOR checksum of the 8-byte payload matches the last byte
+#### 2. Payload Bit Layout (Dynamic based on Configuration)
 
-#### Bit layout within the 64-bit payload
+The 64-bit `payload` is dynamically unpacked based on the `Samples/Cycle` setting in the UI. The parser calculates the bit-width required to store the sample index (e.g., 312 samples requires 9 bits, 128 samples requires 8 bits).
 
-The exact bit mapping is highly dynamic and depends on the `Samples/Cycle` configuration in the UI. The parser automatically calculates the required bit-width for the index mask (e.g., 312 samples requires 9 bits, while 128 samples requires 8 bits).
+**Example: Assuming a configuration of 312 Samples/Cycle (9-bit index)**
 
-Assuming a standard configuration of **312 Samples/Cycle** (9-bit index mask):
+| Bits | Width | Name | Data Type | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| `0..8` | 9 bits | `sample_pos` | Unsigned Int | Index of the sample within the cycle (`0` to `311`). |
+| `9..26` | 18 bits | `U1_raw` | Signed Int (2's comp) | Phase 1 Raw ADC value. |
+| `27..44` | 18 bits | `U2_raw` | Signed Int (2's comp) | Phase 2 Raw ADC value. |
+| `45..62` | 18 bits | `U3_raw` | Signed Int (2's comp) | Phase 3 Raw ADC value. |
+| `63` | 1 bit | `reserved` | Unsigned Int | Unused/Reserved bit. Transmit as `0`. |
 
-- `Bit 0..8`: Sample position within the cycle (0..311)
-- `Bit 9..26`: `U1_raw` (signed-18 two's complement)
-- `Bit 27..44`: `U2_raw` (signed-18 two's complement)
-- `Bit 45..62`: `U3_raw` (signed-18 two's complement)
-- `Bit 63`: Unused/Reserved
+**Decoding rules:**
+- The dynamic `sample_pos` bits are extracted first. If `sample_pos` exceeds the configured samples per cycle, the packet is discarded.
+- Each `U*_raw` field is extracted and decoded as a signed-18 two's complement value.
+- The raw value is then mathematically shifted (`<< 6` equivalent to `* 64`) to restore 24-bit resolution, and subsequently divided by the configured `ADC Scale`.
 
-Decoding rules on the app side:
+#### 3. UART Baudrate Calculation for Real-Time Logging
 
-- `payload` is read as an unsigned 64-bit integer.
-- The dynamic index bits are extracted first.
-- Each `U*_raw` field is decoded as a signed-18 two's complement value.
-- The value is shifted `<< 6` to restore 24-bit resolution, and then divided by the configured `ADC Scale`.
-- If the `sample_pos` exceeds the configured samples per cycle, the packet is discarded.
-- If `delta sample_pos == 0` compared to the previous packet, it is discarded as a duplicate.
+When transmitting binary frames over standard UART (1 Start bit, 8 Data bits, No Parity, 1 Stop bit), each byte requires **10 bits** of transmission overhead. 
 
-Time reconstruction rules:
+- **Bits per Frame:** 10 bytes/frame * 10 bits/byte = **100 bits/frame**.
 
-- The app does not extract absolute timestamps from binary packets.
-- The app reconstructs an internal continuous sample counter from the cyclic `sample_pos`.
+To stream real-time data smoothly without buffering delays on the hardware side, the minimum UART baudrate must exceed `(Samples per Second) * 100`.
 
-Checklist for the firmware transmission side:
+| Frequency | Samples/Cycle | Total Samples/Second | Minimum Baudrate (bps) | Recommended Standard Baudrate |
+| :--- | :--- | :--- | :--- | :--- |
+| 50 Hz | 128 | **6,400** | **640,000** | `921,600` or `1,000,000` |
+| 50 Hz | 156 | **7,800** | **780,000** | `921,600` or `1,000,000` |
+| 50 Hz | 312 | **15,600** | **1,560,000** | `2,000,000` |
 
-- Always transmit exactly `10 bytes/frame`.
-- Do not change the `sync` byte from `0xA5`.
-- Keep the `payload` in `little-endian`.
-- Ensure `sample_pos` does not exhibit excessive jitter across cycles.
-- Recalculate the XOR checksum after packing the payload.
+*Note: For the default 312 Samples/Cycle setting, a baudrate of at least `2,000,000` (2 Mbps) is strictly required to prevent frame dropping at the hardware transmission level.*
 
 ### Playback files
 
@@ -345,11 +342,11 @@ Points reviewed and finalized for the current release:
 - `requirements.txt` has pinned versions to ensure reproducible installations.
 - Added `.gitignore` to block `__pycache__`, `*.pyc`, and local venvs.
 - Smoke-tested history review and scenario builder features:
-	- Input `Go to (index)`
-	- Scrub slider
-	- Cursor readout in history mode
-	- Vertical marker line for the `Go to` point
-	- Horizontal baseline at `0`
+    - Input `Go to (index)`
+    - Scrub slider
+    - Cursor readout in history mode
+    - Vertical marker line for the `Go to` point
+    - Horizontal baseline at `0`
 
 ## Release Packaging Suggestions
 
