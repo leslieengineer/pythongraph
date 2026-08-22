@@ -24,7 +24,7 @@ import pyqtgraph as pg
 from PyQt5.QtCore import Qt, QTimer, QUrl, QStandardPaths
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDoubleSpinBox,
+    QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QSpinBox,
     QFileDialog, QGroupBox, QHBoxLayout, QLabel, QMainWindow,
     QPushButton, QSizePolicy, QSlider, QVBoxLayout, QWidget,
 )
@@ -50,8 +50,8 @@ SAMPLE_DOT_RENDER_LIMIT = 4_000
 SAMPLE_DOT_SIZE = 4
 HISTORY_SLIDER_STEPS = 2_000
  
-WINDOW_OPTS = ("0.02", "0.04", "0.10", "0.20", "0.50", "1", "3", "5", "10", "30", "60", "120")
-DEFAULT_WIN = "0.20"
+WINDOW_OPTS = ("128", "256", "640", "1280", "3200", "6400", "19200", "32000", "64000", "192000", "384000", "768000")
+DEFAULT_WIN = "1280"
  
 COLORS_V      = ("#FF4040", "#40FF40", "#4080FF")
 PHASE_LABELS  = ("U1 (L1)", "U2 (L2)", "U3 (L3)")
@@ -100,7 +100,7 @@ class _RollingBuffer:
  
     # ------------------------------------------------------------------
     def view(self, window_s: float):
-        """Return (t_rel, [u1, u2, u3]) covering the last *window_s* seconds.
+        """Return (t_rel, [u1, u2, u3]) covering the last *window_s* samples.
  
         t_rel is relative: 0 = start of window, window_s = now.
         Uses only as many samples as needed — no full-buffer scan.
@@ -111,7 +111,8 @@ class _RollingBuffer:
  
         cap = self._cap
         # How many samples fit in the window (with a 2× safety margin)
-        n_scan = min(self._size, max(64, int(window_s * QUAL_FS_HZ * 50 * 2.0)))
+        # BỎ NHÂN VỚI QUAL_FS_HZ Ở ĐÂY VÌ window_s BÂY GIỜ LÀ INDEX
+        n_scan = min(self._size, max(64, int(window_s * 2.0)))
  
         if self._size < cap:
             # Buffer not yet full: data lives in [0 .. size-1] sequentially
@@ -480,14 +481,28 @@ class QualMainWindow(QMainWindow):
         # ── Options row ───────────────────────────────────────────────
         opt_row = QHBoxLayout()
  
-        opt_row.addWidget(QLabel("Window (s):"))
-        self._cb_window = QComboBox()
-        for wv in WINDOW_OPTS:
-            self._cb_window.addItem(wv)
-        self._cb_window.setCurrentText(DEFAULT_WIN)
-        self._cb_window.currentTextChanged.connect(self._on_window_changed)
-        self._cb_window.setFixedWidth(60)
-        opt_row.addWidget(self._cb_window)
+        opt_row.addWidget(QLabel("Window (samples):"))
+        
+        # Tạo ô nhập số (SpinBox)
+        self._spin_window = QSpinBox()
+        self._spin_window.setRange(10, 768000)
+        self._spin_window.setValue(1280)
+        self._spin_window.setFixedWidth(80)
+        self._spin_window.valueChanged.connect(self._on_window_changed)
+        opt_row.addWidget(self._spin_window)
+ 
+        # Tạo thanh kéo (Slider)
+        self._sld_window = QSlider(Qt.Horizontal)
+        self._sld_window.setRange(10, 768000)
+        self._sld_window.setValue(1280)
+        self._sld_window.setMinimumWidth(100)
+        self._sld_window.setMaximumWidth(200)
+        
+        # Liên kết đồng bộ 2 chiều giữa thanh kéo và ô nhập số
+        self._sld_window.valueChanged.connect(self._spin_window.setValue)
+        self._spin_window.valueChanged.connect(self._sld_window.setValue)
+        
+        opt_row.addWidget(self._sld_window)
  
         opt_row.addWidget(QLabel("Y zoom (×):"))
         self._spin_ugain = QDoubleSpinBox()
@@ -545,14 +560,14 @@ class QualMainWindow(QMainWindow):
         root.addLayout(opt_row)
  
         hist_row = QHBoxLayout()
-        hist_row.addWidget(QLabel("Go to (s):"))
+        hist_row.addWidget(QLabel("Go to (index):"))
  
         self._spin_history = QDoubleSpinBox()
-        self._spin_history.setRange(0.0, BUFFER_SECS)
-        self._spin_history.setDecimals(7)
-        self._spin_history.setSingleStep(0.01)
+        self._spin_history.setRange(0.0, float(MAX_SAMPLES))
+        self._spin_history.setDecimals(0)
+        self._spin_history.setSingleStep(100.0)
         self._spin_history.setKeyboardTracking(False)
-        self._spin_history.setFixedWidth(96)
+        self._spin_history.setFixedWidth(110)
         self._spin_history.lineEdit().textEdited.connect(self._on_history_text_edited)
         self._spin_history.editingFinished.connect(self._on_history_go)
         hist_row.addWidget(self._spin_history)
@@ -602,6 +617,7 @@ class QualMainWindow(QMainWindow):
         # space from neighbours.  No Ignored — that was starving labels.
         def _mk_sb_lbl(text, max_w, style=""):
             lbl = QLabel(text)
+            lbl.setMinimumWidth(1)
             lbl.setMaximumWidth(max_w)
             lbl.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
             if style:
@@ -642,7 +658,7 @@ class QualMainWindow(QMainWindow):
         self._pw = pg.PlotWidget(title="Voltage  [mV]")
         self._pw.showGrid(x=True, y=True, alpha=0.25)
         self._pw.setLabel("left", "U", units="mV")
-        self._pw.setLabel("bottom", "Time", units="s")
+        self._pw.setLabel("bottom", "Index", units="samples")
         self._pw.addLegend(offset=(10, 10))
         self._pw.setMouseEnabled(x=True, y=False)
  
@@ -686,7 +702,7 @@ class QualMainWindow(QMainWindow):
         self._pw_u12 = pg.PlotWidget(title="Compound voltages  [mV]")
         self._pw_u12.showGrid(x=True, y=True, alpha=0.25)
         self._pw_u12.setLabel("left", "U", units="mV")
-        self._pw_u12.setLabel("bottom", "Time", units="s")
+        self._pw_u12.setLabel("bottom", "Index", units="samples")
         self._pw_u12.addLegend(offset=(10, 10))
         self._pw_u12.setMouseEnabled(x=True, y=False)
  
@@ -729,7 +745,7 @@ class QualMainWindow(QMainWindow):
  
         self._plot_area.addWidget(self._pw_u12, stretch=1)
  
-        self._win_s = float(self._cb_window.currentText())
+        self._win_s = float(self._spin_window.value())
         self._pw.setXRange(0.0, self._win_s, padding=0.0)
         self._pw_u12.setXRange(0.0, self._win_s, padding=0.0)
         self._pw.plotItem.sigXRangeChanged.connect(self._on_main_x_range_changed)
@@ -1315,10 +1331,10 @@ class QualMainWindow(QMainWindow):
  
         if self._history_mode:
             self._lbl_history_state.setText(
-                f"History: {self._view_start_t:.4f}s .. {self._view_end_t:.4f}s")
+                f"History: {self._view_start_t:.0f} .. {self._view_end_t:.0f}")
         else:
             self._lbl_history_state.setText(
-                f"Live: {max_t:.4f}s  |  Buffer {min_t:.4f}s .. {max_t:.4f}s")
+                f"Live: {max_t:.0f}  |  Buffer {min_t:.0f} .. {max_t:.0f}")
  
     def _on_history_go(self):
         if self._buf.sample_count == 0:
@@ -1327,7 +1343,7 @@ class QualMainWindow(QMainWindow):
             return
         self._history_spin_editing = False
         self._show_history_view(self._current_history_input_value())
-        self._lbl_status.setText(f"History  |  jumped to t={self._history_target_t:.4f}s")
+        self._lbl_status.setText(f"History  |  jumped to idx={self._history_target_t:.0f}")
  
     def _on_history_slider_changed(self, value):
         min_t, max_t = self._buf.time_bounds()
@@ -1335,7 +1351,7 @@ class QualMainWindow(QMainWindow):
             return
         target_t = self._slider_value_to_time(value, min_t, max_t)
         self._show_history_view(target_t)
-        self._lbl_status.setText(f"History  |  scrubbed to t={self._history_target_t:.4f}s")
+        self._lbl_status.setText(f"History  |  scrubbed to idx={self._history_target_t:.0f}")
  
     def _on_history_slider_pressed(self):
         self._history_slider_dragging = True
@@ -1526,7 +1542,7 @@ class QualMainWindow(QMainWindow):
         self._vline_u12.setPos(x)
  
     def _set_cursor_label(self, t_val, u_vals, include_phases, include_compounds):
-        parts = [f"t={t_val:.4f}s"]
+        parts = [f"idx={t_val:.0f}"]
         if include_phases:
             phase_text = "  ".join(f"U{k+1}={u_vals[k]:.1f}" for k in range(3))
             parts.append(f"{phase_text} mV")
@@ -1623,5 +1639,3 @@ def main():
  
 if __name__ == "__main__":
     main()
- 
- 

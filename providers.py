@@ -82,7 +82,7 @@ def _parse_saved_csv_line(line: str) -> Optional[dict]:
       Current (16-col): t_s, fw_min, fw_sec, fw_ms, U1_mV, U2_mV, U3_mV, ...
     """
     parts = [part.strip() for part in line.strip().split(",")]
-    if not parts or parts[0] == "t_s":
+    if not parts or parts[0] == "t_s" or parts[0] == "index":
         return None
     try:
         t_s = float(parts[0])
@@ -180,12 +180,12 @@ def _parse_binary_packet(packet: bytes, state: dict, counters: Optional[dict] = 
             state["total_voltage_samples"] += delta
             state["last_voltage_sample_pos"] = sample_pos
  
-        t_s = state["total_voltage_samples"] / _BINARY_FS_HZ
+        t_s = float(state["total_voltage_samples"])
         state["last_voltage_t_s"] = t_s
     else:
         scale = _BINARY_CURRENT_SCALE_MA
         value_key = "i"
-        t_s = state.get("last_voltage_t_s", 0.0)
+        t_s = float(state.get("last_voltage_t_s", 0.0))
  
     values = [
         _decode_signed18(raw_s1) * scale,
@@ -438,6 +438,7 @@ class QualSimulationProvider(_BaseProvider):
         fs     = self.QUAL_FS
         period = 1.0 / fs          # 156.25 us between samples
         t      = 0.0
+        sample_idx = 0             # Thêm biến đếm index
         t0_wall = time.monotonic()
  
         while not self._stop.is_set():
@@ -446,9 +447,13 @@ class QualSimulationProvider(_BaseProvider):
                 u1 = vpeak * math.sin(2 * math.pi * self._freq * t)
                 u2 = vpeak * math.sin(2 * math.pi * self._freq * t - 2 * math.pi / 3)
                 u3 = vpeak * math.sin(2 * math.pi * self._freq * t + 2 * math.pi / 3)
-                self._push({"t_s": t, "u": [u1, u2, u3]})
+                
+                # Truyền sample_idx vào key "t_s" thay vì truyền t
+                self._push({"t_s": float(sample_idx), "u": [u1, u2, u3]})
+                
                 self.frames_rx += 1
                 t += period
+                sample_idx += 1    # Tăng index sau mỗi mẫu được sinh ra
  
             # Pace to real-time: sleep until wall-clock matches simulated time
             elapsed_wall = time.monotonic() - t0_wall
@@ -497,7 +502,7 @@ class QualFileProvider(_BaseProvider):
             if self._stop.is_set():
                 break
             # Compute how long to wait (scaled by speed)
-            t_file_offset = frame["t_s"] - t_file_start
+            t_file_offset = (frame["t_s"] - t_file_start) / (128 * 50.0) # Convert index back to seconds
             t_wall_target = t_wall_start + t_file_offset / self._speed
             wait = t_wall_target - time.monotonic()
             if wait > 0.001:
