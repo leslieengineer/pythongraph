@@ -60,7 +60,6 @@ def _find_binary_sync(buf: bytes) -> int:
  
  
 def _enrich_frame(frame: dict, state: dict) -> dict:
-    """Computes Compound values & RMS incrementally for ALL incoming frames."""
     u1, u2, u3 = frame["u"]
     frame["P12_val"] = u1 - u2
     frame["P23_val"] = u2 - u3
@@ -133,11 +132,10 @@ def _parse_saved_csv_line(line: str) -> Optional[dict]:
  
  
 def _parse_binary_packet(packet: bytes, state: dict, config: dict, counters: Optional[dict] = None) -> Optional[dict]:
-    """Strictly parses the static 13-byte layout."""
+    """Strictly parses the static 13-byte layout with virtual continuous counter."""
     if len(packet) != _BINARY_PACKET_SIZE or packet[0] != _BINARY_SYNC:
         return None
         
-    # Checksum calculation covers bytes 1 through 11
     if _binary_checksum(packet[1:12]) != packet[-1]:
         if counters is not None:
             counters["checksum_errors"] = counters.get("checksum_errors", 0) + 1
@@ -150,23 +148,34 @@ def _parse_binary_packet(packet: bytes, state: dict, config: dict, counters: Opt
     ts_sec = (ts_raw >> _BINARY_TS_SEC_SHIFT) & _BINARY_TS_SEC_MASK
     ts_min = (ts_raw >> _BINARY_TS_MIN_SHIFT) & _BINARY_TS_MIN_MASK
  
-    # Extract 8 bytes of payload (Bytes 4 to 11)
     payload = int.from_bytes(packet[4:12], byteorder="little", signed=False)
     
-    # Static bit masks
-    sample_pos = payload & 0xFF                     # Payload[7:0]
-    raw_s1 = (payload >> 8)  & _BINARY_SAMPLE_MASK  # Payload[25:8]
-    raw_s2 = (payload >> 26) & _BINARY_SAMPLE_MASK  # Payload[43:26]
-    raw_s3 = (payload >> 44) & _BINARY_SAMPLE_MASK  # Payload[61:44]
+    # 8-bit sample index purely for detecting missed packets
+    sample_pos = payload & 0xFF                     
+    raw_s1 = (payload >> 8)  & _BINARY_SAMPLE_MASK  
+    raw_s2 = (payload >> 26) & _BINARY_SAMPLE_MASK  
+    raw_s3 = (payload >> 44) & _BINARY_SAMPLE_MASK  
  
     last_sample_pos = state.get("last_sample_pos")
     if last_sample_pos is None:
         state["last_sample_pos"] = sample_pos
         state["total_samples"] = 0
     else:
-        delta = (sample_pos - last_sample_pos) & 0xFF
-        if delta == 0:
-            return None
+        if sample_pos == last_sample_pos:
+            return None  # Duplicate packet ignored
+        elif sample_pos > last_sample_pos:
+            delta = sample_pos - last_sample_pos
+        else:
+            # Pseudo-counter magic: Wrap-around boundary reached!
+            # Since firmware resets at an arbitrary K_SP_SAMPLES_PER_CYCLE (e.g., 128),
+            # standard 8-bit math (sample_pos - last_sample_pos) & 0xFF creates a massive jump (e.g., 129).
+            # By enforcing delta = 1, we perfectly stitch the gap and plot continuously.
+            delta = 1
+
+        # Fallback cap to prevent glitching if index gets severely corrupted
+        if delta > 10:
+            delta = 1
+
         state["total_samples"] += delta
         state["last_sample_pos"] = sample_pos
  
@@ -355,7 +364,6 @@ class QualSimulationProvider(_BaseProvider):
     def _run(self):
         vpeak = self._v_rms * math.sqrt(2)
         spc = self._config.get("samples_per_cycle", 312)
-        # Giảm 1/2 độ phân giải để mô phỏng đúng luồng data nhận từ firmware
         eff_spc = max(1, int(spc // 2))
         sample_idx = 0
         while not self._stop.is_set():
@@ -399,7 +407,7 @@ class QualFileProvider(_BaseProvider):
         t_file_start = frames[0]["t_s"]
         t_wall_start = time.monotonic()
         spc = self._config.get("samples_per_cycle", 312)
-        eff_spc = spc / 2.0  # Chu kỳ thời gian quy đổi theo độ phân giải thực tế
+        eff_spc = spc / 2.0  
         freq = self._config.get("grid_freq", 50.0)
  
         for frame in frames:

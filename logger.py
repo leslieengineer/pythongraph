@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import Optional
  
-_SENTINEL = object()   # poison pill to stop the writer thread
+_SENTINEL = object()
 _CSV_HEADER = [
     "index", "fw_min", "fw_sec", "fw_ms",
     "P1_val", "P2_val", "P3_val",
@@ -29,14 +29,12 @@ _CSV_HEADER = [
  
 def export_csv_snapshot(path: str, t_values, u_values,
                         fw_min_values=None, fw_sec_values=None, fw_ms_values=None):
-    """Write a complete CSV snapshot immediately and return the row count."""
     csv_path = Path(path)
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     _fw_min = fw_min_values if fw_min_values is not None else []
     _fw_sec = fw_sec_values if fw_sec_values is not None else []
     _fw_ms  = fw_ms_values  if fw_ms_values  is not None else []
  
-    # Pre-compute per-row zero-crossing RMS for all 6 signals.
     p1v = [float(v) for v in u_values[0]]
     p2v = [float(v) for v in u_values[1]]
     p3v = [float(v) for v in u_values[2]]
@@ -46,7 +44,6 @@ def export_csv_snapshot(path: str, t_values, u_values,
     n_rows = len(p1v)
  
     def _zc_rms_array(sig):
-        """Return array of RMS values aligned to zero-crossing rows."""
         out = [None] * len(sig)
         prev, sq_sum, n = None, 0.0, 0
         for i, val in enumerate(sig):
@@ -99,7 +96,6 @@ def export_csv_snapshot(path: str, t_values, u_values,
  
  
 def prepare_csv_log(path: str, overwrite: bool = False):
-    """Ensure the CSV path exists and contains the header row."""
     csv_path = Path(path)
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     if not overwrite and csv_path.exists() and csv_path.stat().st_size > 0:
@@ -111,8 +107,6 @@ def prepare_csv_log(path: str, overwrite: bool = False):
  
  
 class QualDataLogger:
-    """Thread-safe CSV logger."""
- 
     def __init__(self, path: str, in_q: queue.Queue, truncate: bool = False):
         self._path  = Path(path)
         self._q     = in_q
@@ -127,7 +121,6 @@ class QualDataLogger:
         self._thread.start()
  
     def stop(self):
-        """Signal the writer to flush and exit, then wait for it."""
         while True:
             try:
                 self._q.put(_SENTINEL, timeout=0.5)
