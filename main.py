@@ -9,6 +9,7 @@ import queue
 import sys
 import time
 import csv
+import math
 from pathlib import Path
  
 import numpy as np
@@ -37,7 +38,6 @@ MAX_SAMPLES = int(BUFFER_SECS * (DEFAULT_SPC / 2.0) * DEFAULT_FREQ * 1.2)
 REFRESH_MS  = 33           
 GUI_QUEUE_SECS = 1.0       
 GUI_QUEUE_MAX  = int((DEFAULT_SPC / 2.0) * DEFAULT_FREQ * GUI_QUEUE_SECS)
-RENDER_SOFT_LIMIT = 20_000
 SAMPLE_DOT_RENDER_LIMIT = 4_000
 SAMPLE_DOT_SIZE = 4
 HISTORY_SLIDER_STEPS = 10_000
@@ -293,7 +293,7 @@ class QualMainWindow(QMainWindow):
         self._spin_spc = QSpinBox()
         self._spin_spc.setRange(10, 10000)
         self._spin_spc.setValue(312)
-        self._spin_spc.setToolTip("Firmware acquisition samples per cycle. The app automatically calculates the 1/2 resolution subsampled rate.")
+        self._spin_spc.setToolTip("Firmware acquisition samples per cycle.")
         self._spin_spc.valueChanged.connect(self._update_window_samples)
         cfg_form.addRow("Samples/Cycle:", self._spin_spc)
         
@@ -365,19 +365,28 @@ class QualMainWindow(QMainWindow):
         self._btn_pick_file.clicked.connect(self._pick_log)
         file_box.addWidget(self._btn_pick_file)
         
-        # Nút tính năng mới để xuất ra file array C/C++
         self._btn_export_inc = QPushButton("📄 Export .inc")
         self._btn_export_inc.setToolTip("Export Playback CSV to C/C++ .inc array")
         self._btn_export_inc.clicked.connect(self._export_inc_file)
         file_box.addWidget(self._btn_export_inc)
 
         self._spin_speed = QDoubleSpinBox()
-        self._spin_speed.setRange(0.1, 100.0)
+        self._spin_speed.setRange(0.0, 100.0)
+        self._spin_speed.setSpecialValueText("MAX")
         self._spin_speed.setValue(1.0)
         self._lbl_speed = QLabel("Speed:")
         
+        speed_box = QHBoxLayout()
+        speed_box.setContentsMargins(0, 0, 0, 0)
+        speed_box.addWidget(self._spin_speed)
+        
+        self._btn_load_all = QPushButton("⚡ Load All")
+        self._btn_load_all.setToolTip("Instantly load the entire file into memory")
+        self._btn_load_all.clicked.connect(self._on_load_all)
+        speed_box.addWidget(self._btn_load_all)
+        
         conn_form.addRow(self._lbl_file, file_box)
-        conn_form.addRow(self._lbl_speed, self._spin_speed)
+        conn_form.addRow(self._lbl_speed, speed_box)
         top_layout.addWidget(conn_grp)
  
         act_grp = QGroupBox("Actions")
@@ -639,12 +648,9 @@ class QualMainWindow(QMainWindow):
         self._curve_pens = [pg.mkPen(col, width=1.5) for col in COLORS_V]
         self._curve_brushes = [pg.mkBrush(col) for col in COLORS_V]
         self._curves = [
-            self._pw.plot([], [], name=lbl, pen=pen, connect="finite")
+            self._pw.plot([], [], name=lbl, pen=pen)
             for lbl, pen in zip(PHASE_LABELS, self._curve_pens)
         ]
-        for curve in self._curves:
-            curve.setClipToView(True)
-            curve.setDownsampling(auto=True, method="peak")
  
         _cp = pg.mkPen(color="#FFFFFF90", width=1, style=Qt.DashLine)
         self._vline = pg.InfiniteLine(angle=90, movable=False, pen=_cp)
@@ -682,12 +688,9 @@ class QualMainWindow(QMainWindow):
         self._compound_pens = [pg.mkPen(color, width=1.5) for _sl, _fl, color, _sa, _sb in COMPOUND_CHANNELS]
         self._compound_brushes = [pg.mkBrush(color) for _sl, _fl, color, _sa, _sb in COMPOUND_CHANNELS]
         self._compound_curves = [
-            self._pw_u12.plot([], [], name=fl, pen=pen, connect="finite")
+            self._pw_u12.plot([], [], name=fl, pen=pen)
             for (_sl, fl, _c, _sa, _sb), pen in zip(COMPOUND_CHANNELS, self._compound_pens)
         ]
-        for curve in self._compound_curves:
-            curve.setClipToView(True)
-            curve.setDownsampling(auto=True, method="peak")
  
         self._zero_hline_u12 = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen(color="#7FDBFF", width=1))
         self._pw_u12.addItem(self._zero_hline_u12, ignoreBounds=True)
@@ -726,11 +729,18 @@ class QualMainWindow(QMainWindow):
             w.setVisible(online)
         for w in (self._lbl_vrms, self._spin_vrms, self._lbl_phi,  self._spin_phi):
             w.setVisible(sim)
-        for w in (self._lbl_file, self._btn_pick_file, self._btn_export_inc, self._lbl_speed, self._spin_speed):
+        for w in (self._lbl_file, self._btn_pick_file, self._btn_export_inc, self._lbl_speed, self._spin_speed, self._btn_load_all):
             w.setVisible(play)
             
         for w in (self._chk_log, self._btn_log_file, self._btn_open_log_folder):
             w.setVisible(not play)
+            
+    def _on_load_all(self):
+        self._spin_speed.setValue(0.0)
+        if self._btn_start.isChecked():
+            self._on_stop()
+        self._btn_start.setChecked(True)
+        self._on_start()
  
     def _on_sc_action_changed(self, action):
         v1_show = v2_show = False
@@ -876,7 +886,6 @@ class QualMainWindow(QMainWindow):
                 reader = csv.DictReader(f)
                 headers = reader.fieldnames or []
                 
-                # Tự động nhận diện định dạng cột (Chuẩn mới P1_val hoặc chuẩn cũ U1_mV)
                 c1 = 'P1_val' if 'P1_val' in headers else ('U1_mV' if 'U1_mV' in headers else None)
                 c2 = 'P2_val' if 'P2_val' in headers else ('U2_mV' if 'U2_mV' in headers else None)
                 c3 = 'P3_val' if 'P3_val' in headers else ('U3_mV' if 'U3_mV' in headers else None)
@@ -887,7 +896,6 @@ class QualMainWindow(QMainWindow):
                 
                 for row in reader:
                     try:
-                        # Convert float to rounded int for C++ array compatibility
                         v1 = int(round(float(row[c1])))
                         v2 = int(round(float(row[c2])))
                         v3 = int(round(float(row[c3])))
@@ -975,6 +983,9 @@ class QualMainWindow(QMainWindow):
     def _on_start(self):
         self._stop_provider()
         
+        # [INDUSTRY STANDARD] Bắt buộc ghi đè log file mỗi khi bấm Start để loại bỏ 100% lỗi Index tuột về 0
+        self._log_overwrite_requested = True
+        
         config = {
             "samples_per_cycle": self._spin_spc.value(),
             "grid_freq": self._spin_grid_freq.value(),
@@ -1012,6 +1023,12 @@ class QualMainWindow(QMainWindow):
         self._update_history_controls()
  
         mode = self._cb_mode.currentIndex()
+        
+        if mode == 2:
+            self._gui_q = queue.Queue(maxsize=0)
+        else:
+            self._gui_q = queue.Queue(maxsize=GUI_QUEUE_MAX)
+            
         if mode == 0:
             port = self._cb_port.currentText().strip() or "COM1"
             baud_str = self._cb_baud.currentText().strip()
@@ -1111,7 +1128,7 @@ class QualMainWindow(QMainWindow):
             self._update_u12_y_zoom(self._compound_values(self._latest_u))
  
     def _update_y_zoom(self, u_v):
-        visible_data = [d for d, chk in zip(u_v, self._chk_u) if chk.isChecked() and len(d) > 0 and not np.all(np.isnan(d))]
+        visible_data = [d for d, chk in zip(u_v, self._chk_u) if chk.isChecked() and len(d) > 0]
         if not visible_data: return
         y_min = min(float(np.nanmin(d)) for d in visible_data)
         y_max = max(float(np.nanmax(d)) for d in visible_data)
@@ -1128,7 +1145,7 @@ class QualMainWindow(QMainWindow):
         return [u_vals[sa] - u_vals[sb] for _sl, _fl, _c, sa, sb in COMPOUND_CHANNELS]
  
     def _update_u12_y_zoom(self, compound_data):
-        visible_compound_data = [d for idx, d in enumerate(compound_data) if self._chk_compound[idx].isChecked() and len(d) > 0 and not np.all(np.isnan(d))]
+        visible_compound_data = [d for idx, d in enumerate(compound_data) if self._chk_compound[idx].isChecked() and len(d) > 0]
         if not visible_compound_data: return
         y_min = min(float(np.nanmin(d)) for d in visible_compound_data)
         y_max = max(float(np.nanmax(d)) for d in visible_compound_data)
@@ -1160,7 +1177,8 @@ class QualMainWindow(QMainWindow):
             line_edit.blockSignals(True); line_edit.setText(restore_text); line_edit.setCursorPosition(min(restore_cursor, len(restore_text))); line_edit.blockSignals(False)
  
     def _current_history_input_value(self):
-        try: return float(self._spin_history.lineEdit().text().strip())
+        text = self._spin_history.lineEdit().text().strip().replace(',', '')
+        try: return float(text)
         except ValueError: return float(self._spin_history.value())
  
     def _mark_history_snapshot_dirty(self): self._history_snapshot_dirty = True
@@ -1268,28 +1286,23 @@ class QualMainWindow(QMainWindow):
  
     def _drain_gui_queue(self):
         new_frames = 0
+        t_start = time.monotonic()
         while True:
             try: frame = self._gui_q.get_nowait()
             except queue.Empty: break
             
-            delta = frame.get("delta", 1)
-            
-            nan_inserts = min(delta - 1, self._buf._cap // 2)
-            if nan_inserts > 0:
-                nan_u = [np.nan, np.nan, np.nan]
-                for i in range(nan_inserts, 0, -1):
-                    miss_t = frame["t_s"] - i
-                    self._buf.push(miss_t, nan_u, 0, 0, 0)
-            
             self._buf.push(frame["t_s"], frame["u"], fw_min=frame.get("fw_min", 0), fw_sec=frame.get("fw_sec", 0), fw_ms=frame.get("fw_ms", 0))
+            new_frames += 1
+            
+            if new_frames % 2000 == 0 and (time.monotonic() - t_start) > 0.015:
+                break
+                
+        if new_frames > 0:
             self._mark_history_snapshot_dirty()
-            new_frames += delta
         return new_frames
  
     def _prepare_render_view(self, t, u_v):
-        if len(t) <= RENDER_SOFT_LIMIT: return t, u_v
-        stride = max(1, len(t) // max(max(1, int(self._pw.width())) * 4, 4_000))
-        return (t, u_v) if stride == 1 else (t[::stride], [d[::stride] for d in u_v])
+        return t, u_v
  
     def _update_dots_visibility(self):
         if len(self._latest_t) == 0: return
@@ -1301,34 +1314,32 @@ class QualMainWindow(QMainWindow):
         except Exception:
             show_dots = False
 
-        t_render, u_render = self._prepare_render_view(self._latest_t, self._latest_u)
         for k, curve in enumerate(self._curves):
             if curve.isVisible():
-                curve.setData(t_render, u_render[k], pen=self._curve_pens[k], symbol="o" if show_dots else None, symbolSize=SAMPLE_DOT_SIZE if show_dots else 0, symbolBrush=self._curve_brushes[k] if show_dots else None, symbolPen=self._curve_pens[k] if show_dots else None)
+                curve.setData(self._latest_t, self._latest_u[k], pen=self._curve_pens[k], symbol="o" if show_dots else None, symbolSize=SAMPLE_DOT_SIZE if show_dots else 0, symbolBrush=self._curve_brushes[k] if show_dots else None, symbolPen=self._curve_pens[k] if show_dots else None)
         
-        compound_render = self._compound_values(u_render)
+        compound_vals = self._compound_values(self._latest_u)
         for idx, curve in enumerate(self._compound_curves):
             if curve.isVisible():
-                curve.setData(t_render, compound_render[idx], pen=self._compound_pens[idx], symbol="o" if show_dots else None, symbolSize=SAMPLE_DOT_SIZE if show_dots else 0, symbolBrush=self._compound_brushes[idx] if show_dots else None, symbolPen=self._compound_pens[idx] if show_dots else None)
+                curve.setData(self._latest_t, compound_vals[idx], pen=self._compound_pens[idx], symbol="o" if show_dots else None, symbolSize=SAMPLE_DOT_SIZE if show_dots else 0, symbolBrush=self._compound_brushes[idx] if show_dots else None, symbolPen=self._compound_pens[idx] if show_dots else None)
 
     def _render_plot(self, t, u_v):
-        t_render, u_render = self._prepare_render_view(t, u_v)
         if len(t) > 0:
             try:
                 x_min, x_max = self._pw.viewRange()[0]
-                left = int(np.searchsorted(t_render, x_min))
-                right = int(np.searchsorted(t_render, x_max))
+                left = int(np.searchsorted(t, x_min))
+                right = int(np.searchsorted(t, x_max))
                 show_dots = self._chk_sample_dots.isChecked() and (right - left) <= SAMPLE_DOT_RENDER_LIMIT
             except Exception:
-                show_dots = self._chk_sample_dots.isChecked() and len(t_render) <= SAMPLE_DOT_RENDER_LIMIT
+                show_dots = self._chk_sample_dots.isChecked() and len(t) <= SAMPLE_DOT_RENDER_LIMIT
             
             for k, curve in enumerate(self._curves):
                 if curve.isVisible():
-                    curve.setData(t_render, u_render[k], pen=self._curve_pens[k], symbol="o" if show_dots else None, symbolSize=SAMPLE_DOT_SIZE if show_dots else 0, symbolBrush=self._curve_brushes[k] if show_dots else None, symbolPen=self._curve_pens[k] if show_dots else None)
-            compound_render = self._compound_values(u_render)
+                    curve.setData(t, u_v[k], pen=self._curve_pens[k], symbol="o" if show_dots else None, symbolSize=SAMPLE_DOT_SIZE if show_dots else 0, symbolBrush=self._curve_brushes[k] if show_dots else None, symbolPen=self._curve_pens[k] if show_dots else None)
+            compound_render = self._compound_values(u_v)
             for idx, curve in enumerate(self._compound_curves):
                 if curve.isVisible():
-                    curve.setData(t_render, compound_render[idx], pen=self._compound_pens[idx], symbol="o" if show_dots else None, symbolSize=SAMPLE_DOT_SIZE if show_dots else 0, symbolBrush=self._compound_brushes[idx] if show_dots else None, symbolPen=self._compound_pens[idx] if show_dots else None)
+                    curve.setData(t, compound_render[idx], pen=self._compound_pens[idx], symbol="o" if show_dots else None, symbolSize=SAMPLE_DOT_SIZE if show_dots else 0, symbolBrush=self._compound_brushes[idx] if show_dots else None, symbolPen=self._compound_pens[idx] if show_dots else None)
             self._update_y_zoom(u_v)
             self._update_u12_y_zoom(self._compound_values(u_v))
             return _RollingBuffer.rms(u_v)
@@ -1355,6 +1366,15 @@ class QualMainWindow(QMainWindow):
         elif self._buf.sample_count > 0: self._update_history_controls()
  
         if self._provider is None and new_frames == 0 and self._buf.sample_count == 0: return
+        
+        if self._provider is not None:
+            err = getattr(self._provider, "error", None)
+            if err: 
+                self._lbl_status.setText(f"Error: {err}")
+                self._on_stop()
+            elif getattr(self._provider, "is_finished", False) and self._gui_q.empty():
+                self._on_stop()
+                self._lbl_status.setText("Playback completed")
  
         now = time.monotonic()
         self._frames_since += new_frames
@@ -1385,14 +1405,11 @@ class QualMainWindow(QMainWindow):
         unit = self._get_unit_str()
         self._lbl_rms_v.setText(f"RMS:  P1={rms_u[0]:.1f}  P2={rms_u[1]:.1f}  P3={rms_u[2]:.1f} {unit}")
  
-        if self._provider is not None:
-            err = getattr(self._provider, "error", None)
-            if err: self._lbl_status.setText(f"Error: {err}"); self._on_stop()
- 
     def _cursor_sample_at_x(self, x):
         t_rel, t_abs, u_v = self._latest_t, self._latest_t_abs if len(self._latest_t_abs) == len(self._latest_t) else self._latest_t, self._latest_u
         if len(t_rel) < 1: return None
-        idx = max(0, min(int(np.searchsorted(t_rel, x)), len(t_rel) - 1))
+        idx = int(np.searchsorted(t_rel, x))
+        idx = max(0, min(idx, len(t_rel) - 1))
         if idx > 0 and abs(t_rel[idx - 1] - x) <= abs(t_rel[idx] - x): idx -= 1
         return float(t_rel[idx]), float(t_abs[idx]), [float(u_v[k][idx]) if len(u_v[k]) > idx else 0.0 for k in range(3)]
  
@@ -1402,12 +1419,10 @@ class QualMainWindow(QMainWindow):
         unit = self._get_unit_str()
         parts = [f"idx={t_val:.0f}"]
         if include_phases:
-            clean_u = ["NaN" if math.isnan(u_vals[k]) else f"{u_vals[k]:.1f}" for k in range(3)]
-            parts.append("  ".join(f"P{k+1}={clean_u[k]}" for k in range(3)) + f" {unit}")
+            parts.append("  ".join(f"P{k+1}={u_vals[k]:.1f}" for k in range(3)) + f" {unit}")
         if include_compounds:
             comp_vals = self._compound_values(u_vals)
-            clean_c = ["NaN" if math.isnan(v) else f"{v:.1f}" for v in comp_vals]
-            compound_text = "  ".join(f"{sl}={clean_c[idx]}" for idx, (sl, _fl, _c, _sa, _sb) in enumerate(COMPOUND_CHANNELS) if self._chk_compound[idx].isChecked())
+            compound_text = "  ".join(f"{sl}={comp_vals[idx]:.1f}" for idx, (sl, _fl, _c, _sa, _sb) in enumerate(COMPOUND_CHANNELS) if self._chk_compound[idx].isChecked())
             if compound_text: parts.append(f"{compound_text} {unit}")
         self._lbl_cursor.setText("    ".join(parts))
  

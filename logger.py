@@ -1,12 +1,6 @@
 """
 logger.py — Asynchronous CSV logger for QUAL Waveform Viewer
 ============================================================
-QualDataLogger consumes frames from a queue.Queue and writes them
-to a CSV file on a dedicated background thread so the GUI is never
-blocked by disk I/O.
- 
-Frame format expected:
-    {"t_s": float, "u": [p1, p2, p3]}
 """
 from __future__ import annotations
  
@@ -47,6 +41,8 @@ def export_csv_snapshot(path: str, t_values, u_values,
         out = [None] * len(sig)
         prev, sq_sum, n = None, 0.0, 0
         for i, val in enumerate(sig):
+            if val is None or math.isnan(val):
+                continue
             if prev is not None:
                 crossing = (
                     (prev != 0 and val == 0) or
@@ -71,7 +67,10 @@ def export_csv_snapshot(path: str, t_values, u_values,
     rms_p23 = _zc_rms_array(p23v)
     rms_p31 = _zc_rms_array(p31v)
  
-    def _f(v): return f"{v:.3f}" if v is not None else ""
+    def _f(v): 
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return ""
+        return f"{v:.3f}"
  
     row_count = 0
     with csv_path.open("w", newline="", encoding="utf-8") as fh:
@@ -156,8 +155,14 @@ class QualDataLogger:
                         fw_min = item.get("fw_min", "")
                         fw_sec = item.get("fw_sec", "")
                         fw_ms  = item.get("fw_ms",  "")
-                        def _f(v):   return f"{v:.3f}" if v is not None else ""
+                        
+                        def _f(v): 
+                            if v is None or (isinstance(v, float) and math.isnan(v)):
+                                return ""
+                            return f"{v:.3f}"
+                            
                         def _rms(k): return _f(item.get(k))
+                        
                         writer.writerow([
                             f"{t:.0f}", fw_min, fw_sec, fw_ms,
                             _f(u[0]),   _f(u[1]),   _f(u[2]),

@@ -1,11 +1,6 @@
 """
 providers.py — Data source providers for QUAL Waveform Viewer
 =============================================================
-Data providers parse incoming serial/simulated/playback streams and 
-feed generic frames to the UI/Logger queue.
-
-Binary payload strictly follows the 13-byte 0xA5 Sync structure.
-Effective samples per cycle is halved due to firmware subsampling.
 """
 from __future__ import annotations
  
@@ -16,10 +11,6 @@ import threading
 import time
 from pathlib import Path
 from typing import Optional
- 
-# ---------------------------------------------------------------------------
-# Constants & Helpers
-# ---------------------------------------------------------------------------
  
 def list_serial_ports() -> list[str]:
     try:
@@ -132,7 +123,6 @@ def _parse_saved_csv_line(line: str) -> Optional[dict]:
  
  
 def _parse_binary_packet(packet: bytes, state: dict, config: dict, counters: Optional[dict] = None) -> Optional[dict]:
-    """Strictly parses the static 13-byte layout with virtual continuous counter."""
     if len(packet) != _BINARY_PACKET_SIZE or packet[0] != _BINARY_SYNC:
         return None
         
@@ -150,7 +140,6 @@ def _parse_binary_packet(packet: bytes, state: dict, config: dict, counters: Opt
  
     payload = int.from_bytes(packet[4:12], byteorder="little", signed=False)
     
-    # 8-bit sample index purely for detecting missed packets
     sample_pos = payload & 0xFF                     
     raw_s1 = (payload >> 8)  & _BINARY_SAMPLE_MASK  
     raw_s2 = (payload >> 26) & _BINARY_SAMPLE_MASK  
@@ -162,20 +151,15 @@ def _parse_binary_packet(packet: bytes, state: dict, config: dict, counters: Opt
         state["total_samples"] = 0
     else:
         if sample_pos == last_sample_pos:
-            return None  # Duplicate packet ignored
+            return None  
         elif sample_pos > last_sample_pos:
             delta = sample_pos - last_sample_pos
         else:
-            # Pseudo-counter magic: Wrap-around boundary reached!
-            # Since firmware resets at an arbitrary K_SP_SAMPLES_PER_CYCLE (e.g., 128),
-            # standard 8-bit math (sample_pos - last_sample_pos) & 0xFF creates a massive jump (e.g., 129).
-            # By enforcing delta = 1, we perfectly stitch the gap and plot continuously.
-            delta = 1
-
-        # Fallback cap to prevent glitching if index gets severely corrupted
+            delta = 1  
+            
         if delta > 10:
             delta = 1
-
+            
         state["total_samples"] += delta
         state["last_sample_pos"] = sample_pos
  
@@ -186,14 +170,10 @@ def _parse_binary_packet(packet: bytes, state: dict, config: dict, counters: Opt
         "t_s": float(state["total_samples"]),
         "u": [apply_adc_scale(raw_s1), apply_adc_scale(raw_s2), apply_adc_scale(raw_s3)],
         "sample_index": sample_pos,
-        "fw_min": ts_min, "fw_sec": ts_sec, "fw_ms": ts_ms,
+        "fw_min": ts_min, "fw_sec": ts_sec, "fw_ms": ts_ms
     }
     return frame
  
- 
-# ---------------------------------------------------------------------------
-# Base class & Providers
-# ---------------------------------------------------------------------------
  
 class _BaseProvider:
     def __init__(self, out_q: queue.Queue, config: dict = None):
@@ -212,13 +192,21 @@ class _BaseProvider:
         self.checksum_errors = 0
         self.raw_sniff: str = ""
         self.error: Optional[str] = None
+        self.is_finished = False   # Cờ báo hiệu đã load hoàn tất luồng dữ liệu
  
     def set_mirror_queue(self, mirror_q: Optional[queue.Queue]):
         self._mirror_q = mirror_q
  
+    def _run_wrapper(self):
+        try:
+            self._run()
+        finally:
+            self.is_finished = True  # Luôn bật cờ khi thread kết thúc an toàn
+            
     def start(self):
         self._stop.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        self.is_finished = False
+        self._thread = threading.Thread(target=self._run_wrapper, daemon=True)
         self._thread.start()
  
     def stop(self):
@@ -383,40 +371,51 @@ class QualFileProvider(_BaseProvider):
     def __init__(self, path: str, out_q: queue.Queue, speed: float = 1.0, config: dict = None):
         super().__init__(out_q, config)
         self._path  = Path(path)
-        self._speed = max(0.01, speed)
+        self._speed = max(0.0, speed)
  
     def _run(self):
         try:
-            lines = self._path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            file_obj = self._path.open("r", encoding="utf-8", errors="ignore")
         except Exception as exc:
             self.error = str(exc)
             return
- 
-        frames: list[dict] = []
-        for raw in lines:
-            self.lines_rx += 1
-            f = _parse_saved_csv_line(raw) or _parse_line(raw)
-            if f:
-                frames.append(f)
- 
-        self.loaded_frames = len(frames)
-        if not frames:
-            self.error = "No valid playback frames found in file"
-            return
- 
-        t_file_start = frames[0]["t_s"]
-        t_wall_start = time.monotonic()
+            
         spc = self._config.get("samples_per_cycle", 312)
         eff_spc = spc / 2.0  
         freq = self._config.get("grid_freq", 50.0)
+        
+        t_file_start = None
+        t_wall_start = time.monotonic()
  
-        for frame in frames:
-            if self._stop.is_set():
-                break
-            t_file_offset = (frame["t_s"] - t_file_start) / (eff_spc * freq)
-            t_wall_target = t_wall_start + t_file_offset / self._speed
-            wait = t_wall_target - time.monotonic()
-            if wait > 0.001:
-                time.sleep(wait)
-            self.frames_rx += 1
-            self._push(frame)
+        try:
+            with file_obj:
+                for raw in file_obj:
+                    if self._stop.is_set():
+                        break
+                        
+                    self.lines_rx += 1
+                    
+                    if not raw.strip() or raw.startswith("index") or raw.startswith("t_s"):
+                        continue
+                        
+                    f = _parse_saved_csv_line(raw) or _parse_line(raw)
+                    if not f:
+                        continue
+                        
+                    self.loaded_frames += 1
+                    
+                    if t_file_start is None:
+                        t_file_start = f["t_s"]
+                        t_wall_start = time.monotonic()
+                    
+                    if self._speed > 0.0:
+                        t_file_offset = (f["t_s"] - t_file_start) / (eff_spc * freq)
+                        t_wall_target = t_wall_start + t_file_offset / self._speed
+                        wait = t_wall_target - time.monotonic()
+                        if wait > 0.001:
+                            time.sleep(wait)
+                            
+                    self.frames_rx += 1
+                    self._push(f)
+        except Exception as exc:
+            self.error = str(exc)
