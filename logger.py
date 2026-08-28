@@ -6,7 +6,7 @@ to a CSV file on a dedicated background thread so the GUI is never
 blocked by disk I/O.
  
 Frame format expected:
-    {"t_s": float, "u": [u1, u2, u3]}
+    {"t_s": float, "u": [p1, p2, p3]}
 """
 from __future__ import annotations
  
@@ -20,10 +20,10 @@ from typing import Optional
 _SENTINEL = object()   # poison pill to stop the writer thread
 _CSV_HEADER = [
     "index", "fw_min", "fw_sec", "fw_ms",
-    "U1_mV", "U2_mV", "U3_mV",
-    "rms_U1_mV", "rms_U2_mV", "rms_U3_mV",
-    "U12_mV", "U23_mV", "U31_mV",
-    "rms_U12_mV", "rms_U23_mV", "rms_U31_mV",
+    "P1_val", "P2_val", "P3_val",
+    "rms_P1_val", "rms_P2_val", "rms_P3_val",
+    "P12_val", "P23_val", "P31_val",
+    "rms_P12_val", "rms_P23_val", "rms_P31_val",
 ]
  
  
@@ -37,45 +37,42 @@ def export_csv_snapshot(path: str, t_values, u_values,
     _fw_ms  = fw_ms_values  if fw_ms_values  is not None else []
  
     # Pre-compute per-row zero-crossing RMS for all 6 signals.
-    # Each accumulator tracks (prev, sq_sum, n); RMS is emitted on sign change.
-    u1v = [float(v) for v in u_values[0]]
-    u2v = [float(v) for v in u_values[1]]
-    u3v = [float(v) for v in u_values[2]]
-    u12v = [a - b for a, b in zip(u1v, u2v)]
-    u23v = [a - b for a, b in zip(u2v, u3v)]
-    u31v = [a - b for a, b in zip(u3v, u1v)]
-    n_rows = len(u1v)
+    p1v = [float(v) for v in u_values[0]]
+    p2v = [float(v) for v in u_values[1]]
+    p3v = [float(v) for v in u_values[2]]
+    p12v = [a - b for a, b in zip(p1v, p2v)]
+    p23v = [a - b for a, b in zip(p2v, p3v)]
+    p31v = [a - b for a, b in zip(p3v, p1v)]
+    n_rows = len(p1v)
  
     def _zc_rms_array(sig):
-        """Return array of RMS values aligned to zero-crossing rows.
-        Zeros are never accumulated. Any sign transition triggers emit+reset.
-        """
+        """Return array of RMS values aligned to zero-crossing rows."""
         out = [None] * len(sig)
         prev, sq_sum, n = None, 0.0, 0
         for i, val in enumerate(sig):
             if prev is not None:
                 crossing = (
-                    (prev != 0 and val == 0) or   # entering zero
-                    (prev == 0 and val != 0) or   # leaving zero
-                    (prev > 0  and val <  0) or   # pos -> neg
-                    (prev < 0  and val >  0)      # neg -> pos
+                    (prev != 0 and val == 0) or
+                    (prev == 0 and val != 0) or
+                    (prev > 0  and val <  0) or
+                    (prev < 0  and val >  0)
                 )
                 if crossing:
                     if n >= 4:
                         out[i] = math.sqrt(sq_sum / n)
                     sq_sum, n = 0.0, 0
-            if val != 0:          # never accumulate zero samples
+            if val != 0:
                 sq_sum += val * val
                 n      += 1
             prev = val
         return out
  
-    rms_u1  = _zc_rms_array(u1v)
-    rms_u2  = _zc_rms_array(u2v)
-    rms_u3  = _zc_rms_array(u3v)
-    rms_u12 = _zc_rms_array(u12v)
-    rms_u23 = _zc_rms_array(u23v)
-    rms_u31 = _zc_rms_array(u31v)
+    rms_p1  = _zc_rms_array(p1v)
+    rms_p2  = _zc_rms_array(p2v)
+    rms_p3  = _zc_rms_array(p3v)
+    rms_p12 = _zc_rms_array(p12v)
+    rms_p23 = _zc_rms_array(p23v)
+    rms_p31 = _zc_rms_array(p31v)
  
     def _f(v): return f"{v:.3f}" if v is not None else ""
  
@@ -85,16 +82,16 @@ def export_csv_snapshot(path: str, t_values, u_values,
         writer.writerow(_CSV_HEADER)
         for i in range(n_rows):
             t_s  = float(t_values[i])
-            u1f, u2f, u3f = u1v[i], u2v[i], u3v[i]
+            p1f, p2f, p3f = p1v[i], p2v[i], p3v[i]
             fw_min = int(_fw_min[i]) if i < len(_fw_min) else ""
             fw_sec = int(_fw_sec[i]) if i < len(_fw_sec) else ""
             fw_ms  = int(_fw_ms[i])  if i < len(_fw_ms)  else ""
             writer.writerow([
                 f"{t_s:.0f}", fw_min, fw_sec, fw_ms,
-                _f(u1f), _f(u2f), _f(u3f),
-                _f(rms_u1[i]),  _f(rms_u2[i]),  _f(rms_u3[i]),
-                _f(u12v[i]),    _f(u23v[i]),    _f(u31v[i]),
-                _f(rms_u12[i]), _f(rms_u23[i]), _f(rms_u31[i]),
+                _f(p1f), _f(p2f), _f(p3f),
+                _f(rms_p1[i]),  _f(rms_p2[i]),  _f(rms_p3[i]),
+                _f(p12v[i]),    _f(p23v[i]),    _f(p31v[i]),
+                _f(rms_p12[i]), _f(rms_p23[i]), _f(rms_p31[i]),
             ])
             row_count += 1
         fh.flush()
@@ -171,9 +168,9 @@ class QualDataLogger:
                         writer.writerow([
                             f"{t:.0f}", fw_min, fw_sec, fw_ms,
                             _f(u[0]),   _f(u[1]),   _f(u[2]),
-                            _rms("rms_U1_mV"),  _rms("rms_U2_mV"),  _rms("rms_U3_mV"),
-                            _f(item.get("U12_mV")), _f(item.get("U23_mV")), _f(item.get("U31_mV")),
-                            _rms("rms_U12_mV"), _rms("rms_U23_mV"), _rms("rms_U31_mV"),
+                            _rms("rms_P1_val"),  _rms("rms_P2_val"),  _rms("rms_P3_val"),
+                            _f(item.get("P12_val")), _f(item.get("P23_val")), _f(item.get("P31_val")),
+                            _rms("rms_P12_val"), _rms("rms_P23_val"), _rms("rms_P31_val"),
                         ])
                         self.rows_written += 1
                         pending_since_flush += 1
